@@ -9,6 +9,11 @@ const storageKey = "conversations.sealed";
 /// Long enough to answer the Keychain's "allow access" prompt after the helper is rebuilt.
 const keychainTimeout = 120_000;
 
+/// A Keychain prompt hides Tinycast and ends the command, so it is raised before Claude runs.
+export function warmHistoryKey(): void {
+  runHelper(environment.assetsPath, ["probe"], undefined, keychainTimeout).catch(() => undefined);
+}
+
 export const history = historyStore({
   get: () => LocalStorage.getItem<string>(storageKey),
   set: (value) => LocalStorage.setItem(storageKey, value),

@@ -235,11 +235,18 @@ func sealHistory(opening: Bool) -> Never {
     }
 }
 
+/// Reads the key without using it, so macOS asks for access before any draft is at stake.
+func probeKey() -> Never {
+    _ = try? HistorySealing.keychainKey(creating: false)
+    exit(0)
+}
+
 switch CommandLine.arguments.dropFirst().first {
 case "outlook-context": readOutlook()
 case "seal": sealHistory(opening: false)
 case "open": sealHistory(opening: true)
+case "probe": probeKey()
 default:
-    FileHandle.standardError.write(Data("usage: composer-helper outlook-context | seal | open\n".utf8))
+    FileHandle.standardError.write(Data("usage: composer-helper outlook-context | seal | open | probe\n".utf8))
     exit(2)
 }

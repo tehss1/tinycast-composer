@@ -21,7 +21,7 @@ import { ReactElement, useCallback, useEffect, useMemo, useRef, useState } from 
 import { Audience, AudienceChoice, audienceTitle, detectedAudience } from "./lib/audience";
 import { captureTitle, EmailContext, isContextEmpty, TextBoundaries } from "./lib/context";
 import { ClaudeRun, resolveClaude, runClaude } from "./lib/claude";
-import { Conversation, history } from "./lib/history";
+import { Conversation, history, warmHistoryKey } from "./lib/history";
 import { composerDraft, preparedForDelivery } from "./lib/output";
 import { plainText, quotedText } from "./lib/markdown";
 import { outlookBundleId, readOutlook } from "./lib/outlook";
@@ -134,6 +134,7 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
   const queuedRequest = useRef<string | undefined>(undefined);
   const saving = useRef<Promise<void>>(Promise.resolve());
   const delivering = useRef(false);
+  const mounted = useRef(true);
   const generation = useRef(0);
   const conversationID = useRef(props.resume?.id ?? newID());
   const createdAt = useRef(props.resume?.createdAt ?? Date.now());
@@ -147,6 +148,7 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
   const running = streaming !== undefined;
 
   useEffect(() => {
+    warmHistoryKey();
     if (props.resume) return;
     let live = true;
     capture(preferences)
@@ -161,7 +163,13 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
     };
   }, []);
 
-  useEffect(() => () => run.current?.cancel(), []);
+  useEffect(
+    () => () => {
+      mounted.current = false;
+      run.current?.cancel();
+    },
+    [],
+  );
 
   const generate = useCallback(
     (request: string | undefined) => {
@@ -172,7 +180,7 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
           message: preferences.claudePath
             ? `No Claude Code at ${preferences.claudePath}. Fix the path in the extension's preferences.`
             : "Claude Code isn't installed. Install it, then run `claude` once in Terminal to sign in.",
-          request,
+          request: request ?? queuedRequest.current,
           missingClaude: true,
         });
         return;
@@ -310,7 +318,15 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
     delivering.current = true;
     // Hiding the palette to paste can end the command, so the draft is saved first.
     await saving.current;
-    await Clipboard.paste(text);
+    // Leaving Composer while the save finished abandons the paste, rather than landing it elsewhere.
+    if (!mounted.current) return;
+    try {
+      await Clipboard.paste(text);
+    } catch (error) {
+      delivering.current = false;
+      showToast({ style: Toast.Style.Failure, title: "Couldn't paste the draft", message: String(error) });
+      return;
+    }
     // The selection and line boundaries are spent once pasted; History continues the conversation.
     await popToRoot();
   };

@@ -66,8 +66,9 @@ kept in your login Keychain under `tech.uncomplicate.tinycast-composer`; anythin
 days is deleted the next time history is read. If the key is missing or can't be read, Composer
 refuses to save rather than overwrite what it can't open; History offers to try again or delete it.
 
-macOS may ask whether `composer-helper` can use the Keychain item the first time, and again after
-the helper is rebuilt, because the ad-hoc signature changes. Choose **Always Allow**.
+macOS may ask whether `composer-helper` can use the Keychain item after the helper is rebuilt,
+because its ad-hoc signature changes. Composer checks the key as it opens, so the prompt comes before
+any drafting; Tinycast closes while it is up. Choose **Always Allow**, then open Composer again.
 
 ## Preferences
 
