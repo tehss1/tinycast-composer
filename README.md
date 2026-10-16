@@ -23,7 +23,7 @@ without a fork, and in Raycast itself.
 ## Install
 
 **From GitHub:** Tinycast → Settings → Extensions → Install New → Install from GitHub, then enter
-this repository. Tinycast builds it with Node on your Mac.
+`tehss1/tinycast-composer`. Tinycast builds it with Node on your Mac.
 
 **From a folder:**
 
