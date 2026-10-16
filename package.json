@@ -1,0 +1,103 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "tinycast-composer",
+  "title": "Composer",
+  "description": "Rewrite or draft emails with Claude Code, using the Outlook recipients, subject and thread for tone.",
+  "icon": "icon.png",
+  "author": "tehss1",
+  "license": "MIT",
+  "platforms": ["macOS"],
+  "categories": ["Productivity", "Communication"],
+  "commands": [
+    {
+      "name": "compose",
+      "title": "Compose with Claude",
+      "subtitle": "Composer",
+      "description": "Rewrite the selected text, or draft at the caret, using the Outlook email for context.",
+      "mode": "view"
+    },
+    {
+      "name": "history",
+      "title": "Composer History",
+      "subtitle": "Composer",
+      "description": "Browse the last seven days of Composer conversations.",
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "model",
+      "title": "Model",
+      "description": "Claude model for new drafts. Change it per conversation with ⌘⇧M.",
+      "type": "dropdown",
+      "required": false,
+      "default": "sonnet",
+      "data": [
+        { "title": "Sonnet", "value": "sonnet" },
+        { "title": "Opus", "value": "opus" },
+        { "title": "Haiku", "value": "haiku" }
+      ]
+    },
+    {
+      "name": "effort",
+      "title": "Reasoning Effort",
+      "description": "Passed to claude --effort. Default leaves it to Claude Code.",
+      "type": "dropdown",
+      "required": false,
+      "default": "",
+      "data": [
+        { "title": "Default", "value": "" },
+        { "title": "Low", "value": "low" },
+        { "title": "Medium", "value": "medium" },
+        { "title": "High", "value": "high" }
+      ]
+    },
+    {
+      "name": "internalDomains",
+      "title": "Internal Email Domains",
+      "description": "Comma-separated domains. When every recipient is on one, Composer uses the relaxed internal tone.",
+      "type": "textfield",
+      "required": false,
+      "placeholder": "example.com, example.co.uk"
+    },
+    {
+      "name": "readOutlookContext",
+      "title": "Outlook",
+      "label": "Read recipients, subject and thread from Outlook",
+      "description": "Uses Tinycast's Accessibility access. The quoted thread is never saved.",
+      "type": "checkbox",
+      "required": false,
+      "default": true
+    },
+    {
+      "name": "style",
+      "title": "Writing Style",
+      "description": "Replaces the default style instruction. Leave blank for short, one-thought-per-paragraph emails.",
+      "type": "textfield",
+      "required": false
+    },
+    {
+      "name": "claudePath",
+      "title": "Claude Code Path",
+      "description": "Leave blank to find claude in ~/.local/bin, Homebrew and other common places.",
+      "type": "textfield",
+      "required": false,
+      "placeholder": "~/.local/bin/claude"
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^2.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.17",
+    "@types/react": "19.0.10",
+    "esbuild": "^0.28.0",
+    "typescript": "^5.8.0"
+  },
+  "scripts": {
+    "build": "ray build -e dist",
+    "dev": "ray develop",
+    "test": "node scripts/test.mjs",
+    "typecheck": "tsc --noEmit"
+  }
+}
