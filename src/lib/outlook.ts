@@ -1,7 +1,5 @@
-import { execFile } from "child_process";
-import { chmodSync, existsSync } from "fs";
-import { join } from "path";
 import { EmailContext, outlookContext, outlookRecipients, SelectionRange, textBoundaries, TextBoundaries } from "./context";
+import { runHelper } from "./helper";
 
 export const outlookBundleId = "com.microsoft.Outlook";
 
@@ -50,23 +48,10 @@ export function captureFromReply(reply: HelperReply): OutlookRead {
   };
 }
 
-/// Store and folder installs can drop the execute bit, so it is restored before every run.
-export function readOutlook(assetsPath: string): Promise<OutlookRead> {
-  const helper = join(assetsPath, "composer-helper");
-  if (!existsSync(helper)) return Promise.resolve({ status: "unavailable", detail: "helper missing" });
+export async function readOutlook(assetsPath: string): Promise<OutlookRead> {
   try {
-    chmodSync(helper, 0o755);
-  } catch {
-    // Read-only installs keep whatever mode they shipped with.
+    return captureFromReply(JSON.parse(await runHelper(assetsPath, ["outlook-context"], undefined, 3000)));
+  } catch (error) {
+    return { status: "unavailable", detail: String((error as Error).message ?? error) };
   }
-  return new Promise((resolve) => {
-    execFile(helper, ["outlook-context"], { timeout: 3000 }, (error, stdout) => {
-      if (error) return resolve({ status: "unavailable", detail: String(error.message ?? error) });
-      try {
-        resolve(captureFromReply(JSON.parse(String(stdout))));
-      } catch (parseError) {
-        resolve({ status: "unavailable", detail: String(parseError) });
-      }
-    });
-  });
 }

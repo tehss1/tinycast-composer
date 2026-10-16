@@ -12,6 +12,7 @@ import {
   Icon,
   List,
   open,
+  popToRoot,
   showToast,
   Toast,
   useNavigation,
@@ -20,10 +21,12 @@ import { ReactElement, useCallback, useEffect, useMemo, useRef, useState } from 
 import { Audience, AudienceChoice, audienceTitle, detectedAudience } from "./lib/audience";
 import { captureTitle, EmailContext, isContextEmpty, TextBoundaries } from "./lib/context";
 import { ClaudeRun, resolveClaude, runClaude } from "./lib/claude";
-import { Conversation, upsertConversation } from "./lib/history";
+import { Conversation, history } from "./lib/history";
 import { composerDraft, preparedForDelivery } from "./lib/output";
+import { plainText, quotedText } from "./lib/markdown";
 import { outlookBundleId, readOutlook } from "./lib/outlook";
 import {
+  cleanupSource,
   compositionMessage,
   contextOnlyInstruction,
   flattenedPrompt,
@@ -50,6 +53,15 @@ const models = [
 ];
 
 const installURL = "https://docs.claude.com/en/docs/claude-code/setup";
+
+interface Failure {
+  message: string;
+  request?: string;
+  missingClaude?: boolean;
+  stopped?: boolean;
+}
+
+const audienceCycle: AudienceChoice[] = ["automatic", "internal", "external"];
 
 interface Session {
   mode: Mode;
@@ -103,34 +115,24 @@ function resumedSession(conversation: Conversation): Session {
   return { mode: conversation.mode, source, toOutlook: false, insertsAtCaret: false };
 }
 
-/// Markdown joins single newlines, which would run an email's short lines together.
-function asMarkdown(text: string): string {
-  return text.replace(/\n/g, "  \n");
-}
-
-function quoted(text: string): string {
-  return text
-    .split("\n")
-    .map((line) => "> " + line)
-    .join("\n");
-}
-
 function newID(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
-export function Composer(props: { resume?: Conversation }) {
+export function Composer(props: { resume?: Conversation; onSaved?: () => void }) {
   const preferences = getPreferenceValues<Preferences>();
   const { push } = useNavigation();
   const [session, setSession] = useState<Session | undefined>(props.resume && resumedSession(props.resume));
   const [turns, setTurns] = useState<Turn[]>(props.resume?.turns ?? []);
   const [query, setQuery] = useState("");
   const [streaming, setStreaming] = useState<string | undefined>();
-  const [failure, setFailure] = useState<{ message: string; request?: string; missingClaude?: boolean } | undefined>();
+  const [failure, setFailure] = useState<Failure | undefined>();
   const [audienceChoice, setAudienceChoice] = useState<AudienceChoice>(props.resume?.audience ?? "automatic");
   const [model, setModel] = useState(preferences.model || "sonnet");
   const [selectedID, setSelectedID] = useState<string | undefined>();
   const run = useRef<ClaudeRun | undefined>(undefined);
+  const pendingRequest = useRef<string | undefined>(undefined);
+  const queuedRequest = useRef<string | undefined>(undefined);
   const generation = useRef(0);
   const conversationID = useRef(props.resume?.id ?? newID());
   const createdAt = useRef(props.resume?.createdAt ?? Date.now());
@@ -185,6 +187,7 @@ export function Composer(props: { resume?: Conversation }) {
       });
       const instructions = systemInstructions(session.mode, preferences.style ?? "", audience, !first);
       const token = ++generation.current;
+      pendingRequest.current = request ?? (first ? queuedRequest.current : undefined);
       run.current?.cancel();
       setFailure(undefined);
       setStreaming("");
@@ -206,36 +209,41 @@ export function Composer(props: { resume?: Conversation }) {
       current.promise.then(
         (text) => {
           if (generation.current !== token) return;
-          const sources = session.mode === "rewrite" ? session.source : [...turns, { role: "user", text: userText }]
-            .filter((turn) => turn.role === "user")
-            .map((turn) => turn.text)
-            .join("\n");
-          const draft = composerDraft(text.trim(), sources);
+          const draft = composerDraft(text.trim(), cleanupSource(session.mode, session.source, turns));
           if (!draft.trim()) {
             setStreaming(undefined);
-            setFailure({ message: "Claude's reply was empty once its stock greeting was removed. Try again.", request });
+            setFailure({
+              message: "Claude's reply was empty once its stock greeting was removed. Try again.",
+              request: pendingRequest.current,
+            });
+            setSelectedID("failure");
             return;
           }
           const next: Turn[] = [...turns, { role: "user", text: userText }, { role: "assistant", text: draft }];
           setTurns(next);
           setStreaming(undefined);
           setSelectedID(`draft-${next.filter((turn) => turn.role === "assistant").length}`);
-          upsertConversation({
-            id: conversationID.current,
-            mode: session.mode,
-            createdAt: createdAt.current,
-            updatedAt: Date.now(),
-            appName: session.appName ?? props.resume?.appName,
-            subject: session.context?.subject ?? props.resume?.subject,
-            recipient: session.context?.recipient ?? props.resume?.recipient,
-            audience,
-            turns: next,
-          });
+          history
+            .upsert({
+              id: conversationID.current,
+              mode: session.mode,
+              createdAt: createdAt.current,
+              updatedAt: Date.now(),
+              appName: session.appName ?? props.resume?.appName,
+              subject: session.context?.subject ?? props.resume?.subject,
+              recipient: session.context?.recipient ?? props.resume?.recipient,
+              audience,
+              turns: next,
+            })
+            .then(props.onSaved, () =>
+              showToast({ style: Toast.Style.Failure, title: "Couldn't save this draft to Composer History" }),
+            );
         },
         (error: Error) => {
           if (generation.current !== token) return;
           setStreaming(undefined);
-          setFailure(error.message === "Stopped" ? undefined : { message: error.message, request });
+          setFailure({ message: error.message, request: pendingRequest.current });
+          setSelectedID("failure");
         },
       );
     },
@@ -246,10 +254,23 @@ export function Composer(props: { resume?: Conversation }) {
     if (session?.mode === "rewrite" && turns.length === 0 && !props.resume) generate(undefined);
   }, [session]);
 
+  useEffect(() => {
+    const request = queuedRequest.current;
+    if (!request || turns.length === 0 || running) return;
+    queuedRequest.current = undefined;
+    generate(request);
+  }, [turns]);
+
   const send = () => {
     const request = query.trim();
     if (session?.mode === "rewrite" && turns.length === 0) {
+      if (request) {
+        queuedRequest.current = request;
+        setQuery("");
+        clearSearchBar();
+      }
       if (!running) generate(undefined);
+      else if (request) showToast({ title: "Your change follows once the rewrite finishes" });
       return;
     }
     const repliesToThread = turns.length === 0 && !!session?.context?.recentThread;
@@ -266,11 +287,20 @@ export function Composer(props: { resume?: Conversation }) {
     run.current?.cancel();
     generation.current += 1;
     setStreaming(undefined);
+    setFailure({ message: "Stopped before the draft finished.", request: pendingRequest.current, stopped: true });
+    setSelectedID("failure");
   };
+
+  const cycleAudience = () =>
+    setAudienceChoice(audienceCycle[(audienceCycle.indexOf(audienceChoice) + 1) % audienceCycle.length]);
+  const cycleModel = () =>
+    setModel(models[(models.findIndex((option) => option.id === model) + 1) % models.length].id);
 
   const deliver = async (draft: string) => {
     const text = preparedForDelivery(draft, session?.toOutlook ?? false, session?.insertsAtCaret ?? false, session?.boundaries);
     await Clipboard.paste(text);
+    // The selection and line boundaries are spent once pasted; History continues the conversation.
+    await popToRoot();
   };
 
   const deliverTitle = session?.mode === "rewrite" ? "Replace" : "Insert";
@@ -281,16 +311,28 @@ export function Composer(props: { resume?: Conversation }) {
     const context = session?.context;
     const lines = [`# ${captureTitle(context)}`, ""];
     lines.push(`**Audience:** ${audienceTitle[audience]}${audienceChoice === "automatic" ? " (automatic)" : ""}`, "");
-    if (context?.recipient) lines.push(`**To:** ${context.recipient}`, "");
-    if (context?.subject) lines.push(`**Subject:** ${context.subject}`, "");
-    if (context?.recentThread) lines.push("**Recent thread:**", "", quoted(context.recentThread));
+    if (context?.recipient) lines.push(`**To:** ${plainText(context.recipient)}`, "");
+    if (context?.subject) lines.push(`**Subject:** ${plainText(context.subject)}`, "");
+    if (context?.recentThread) lines.push("**Recent thread:**", "", quotedText(context.recentThread));
     if (isContextEmpty(context)) lines.push("No Outlook draft was read for this conversation.");
     return lines.join("\n");
   };
 
   const sharedActions = (
     <>
-      <ActionPanel.Submenu title="Audience" icon={Icon.TwoPeople} shortcut={{ modifiers: ["cmd", "shift"], key: "a" }}>
+      <Action
+        title={`Switch Audience (${audienceChoice === "automatic" ? "Automatic" : audienceTitle[audience]})`}
+        icon={Icon.TwoPeople}
+        shortcut={{ modifiers: ["cmd", "shift"], key: "a" }}
+        onAction={cycleAudience}
+      />
+      <Action
+        title={`Switch Model (${models.find((option) => option.id === model)?.title ?? model})`}
+        icon={Icon.Stars}
+        shortcut={{ modifiers: ["cmd", "shift"], key: "m" }}
+        onAction={cycleModel}
+      />
+      <ActionPanel.Submenu title="Choose Audience" icon={Icon.TwoPeople}>
         {(["automatic", "internal", "external"] as AudienceChoice[]).map((choice) => (
           <Action
             key={choice}
@@ -300,7 +342,7 @@ export function Composer(props: { resume?: Conversation }) {
           />
         ))}
       </ActionPanel.Submenu>
-      <ActionPanel.Submenu title="Model" icon={Icon.Stars} shortcut={{ modifiers: ["cmd", "shift"], key: "m" }}>
+      <ActionPanel.Submenu title="Choose Model" icon={Icon.Stars}>
         {models.map((option) => (
           <Action
             key={option.id}
@@ -353,10 +395,11 @@ export function Composer(props: { resume?: Conversation }) {
         id="streaming"
         title="Writing…"
         icon={{ source: Icon.Pencil, tintColor: Color.Blue }}
-        detail={<List.Item.Detail markdown={asMarkdown(streaming || "…")} />}
+        detail={<List.Item.Detail markdown={plainText(streaming || "…")} />}
         actions={
           <ActionPanel>
-            <Action title="Stop" icon={Icon.Stop} shortcut={{ modifiers: ["cmd"], key: "." }} onAction={stop} />
+            {typing ? sendAction : null}
+            <Action title="Stop" icon={Icon.Stop} shortcut={{ modifiers: ["ctrl"], key: "c" }} onAction={stop} />
             {sharedActions}
           </ActionPanel>
         }
@@ -364,17 +407,25 @@ export function Composer(props: { resume?: Conversation }) {
     );
   }
   if (failure) {
+    const request = failure.request;
     items.push(
       <List.Item
         key="failure"
         id="failure"
-        title="Couldn't write the draft"
-        icon={{ source: Icon.ExclamationMark, tintColor: Color.Red }}
-        detail={<List.Item.Detail markdown={asMarkdown(failure.message)} />}
+        title={failure.stopped ? "Stopped" : "Couldn't write the draft"}
+        icon={failure.stopped ? Icon.Stop : { source: Icon.ExclamationMark, tintColor: Color.Red }}
+        detail={
+          <List.Item.Detail markdown={plainText(failure.message) + (request ? `\n\n**Your request**\n\n${quotedText(request)}` : "")} />
+        }
         actions={
           <ActionPanel>
             {typing ? sendAction : null}
-            <Action title="Retry" icon={Icon.RotateClockwise} onAction={() => generate(failure.request)} />
+            <Action
+              title={failure.stopped ? "Send Again" : "Retry"}
+              icon={Icon.RotateClockwise}
+              onAction={() => generate(turns.length === 0 && session?.mode === "rewrite" ? undefined : request)}
+            />
+            {request ? <Action.CopyToClipboard title="Copy Request" content={request} /> : null}
             {failure.missingClaude ? (
               <Action title="Install Claude Code" icon={Icon.Download} onAction={() => open(installURL)} />
             ) : null}
@@ -403,7 +454,7 @@ export function Composer(props: { resume?: Conversation }) {
         title={`Draft ${row.number}`}
         subtitle={row.label}
         icon={row.number === drafts.length ? Icon.Document : Icon.Clock}
-        detail={<List.Item.Detail markdown={`${quoted(row.label)}\n\n${asMarkdown(row.draft)}`} />}
+        detail={<List.Item.Detail markdown={`${quotedText(row.label)}\n\n${plainText(row.draft)}`} />}
         actions={draftActions(row.draft)}
       />,
     );
@@ -417,6 +468,7 @@ export function Composer(props: { resume?: Conversation }) {
       searchBarPlaceholder={placeholder}
       onSearchTextChange={setQuery}
       selectedItemId={selectedID}
+      onSelectionChange={(id) => setSelectedID(id ?? undefined)}
       navigationTitle={`Composer · ${audienceTitle[audience]}`}
       actions={<ActionPanel>{sendAction}{sharedActions}</ActionPanel>}
     >

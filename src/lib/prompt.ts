@@ -137,3 +137,9 @@ export function flattenedPrompt(instructions: string, turns: Turn[]): string {
   }
   return sections.join("\n\n");
 }
+
+/// Cleanup protects what the writer already had: the previous draft, else their own selection.
+export function cleanupSource(mode: Mode, selection: string, turns: Turn[]): string {
+  const previousDraft = [...turns].reverse().find((turn) => turn.role === "assistant")?.text;
+  return previousDraft ?? (mode === "rewrite" ? selection : "");
+}

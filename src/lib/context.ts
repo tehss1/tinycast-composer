@@ -165,23 +165,39 @@ export interface TextBoundaries {
   selectedLineBreakCount: number;
 }
 
-const isNewline = (character: string | undefined) => character === "\n" || character === "\r" || character === " ";
+const isNewline = (character: string | undefined) =>
+  character !== undefined && /[\n\r\u000b\u000c\u0085\u2028\u2029]/.test(character);
+
+/// Counts line breaks the way Swift counts newline Characters: CRLF is one break, not two.
+function leadingBreaks(text: string): number {
+  let count = 0;
+  let index = 0;
+  while (isNewline(text[index])) {
+    index += text[index] === "\r" && text[index + 1] === "\n" ? 2 : 1;
+    count += 1;
+  }
+  return count;
+}
+
+function trailingBreaks(text: string): number {
+  let count = 0;
+  let index = text.length - 1;
+  while (index >= 0 && isNewline(text[index])) {
+    index -= text[index] === "\n" && text[index - 1] === "\r" ? 2 : 1;
+    count += 1;
+  }
+  return count;
+}
 
 export function textBoundaries(body: string, range: SelectionRange): TextBoundaries | undefined {
   const start = range.location;
   const end = range.location + range.length;
-  if (start < 0 || end > body.length) return undefined;
+  if (start < 0 || range.length < 0 || end > body.length) return undefined;
   const selected = body.slice(start, end);
-  let following = 0;
-  while (isNewline(body[end + following])) following += 1;
-  let selectedBreaks = 0;
-  while (selectedBreaks < selected.length && isNewline(selected[selected.length - 1 - selectedBreaks])) {
-    selectedBreaks += 1;
-  }
   return {
     startsAtLineStart: start === 0 || isNewline(body[start - 1]),
     endsAtLineEnd: end === body.length || isNewline(body[end]) || (selected.length > 0 && isNewline(body[end - 1])),
-    followingLineBreakCount: following,
-    selectedLineBreakCount: selectedBreaks,
+    followingLineBreakCount: leadingBreaks(body.slice(end)),
+    selectedLineBreakCount: trailingBreaks(selected),
   };
 }

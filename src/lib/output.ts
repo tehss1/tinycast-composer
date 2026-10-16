@@ -2,7 +2,7 @@ import { TextBoundaries } from "./context";
 
 const isLetter = (c: string | undefined) => c !== undefined && /\p{L}/u.test(c);
 const isNumber = (c: string | undefined) => c !== undefined && /\p{N}/u.test(c);
-const isNewline = (c: string | undefined) => c === "\n" || c === "\r" || c === " ";
+const isNewline = (c: string | undefined) => c !== undefined && /[\n\r\u000b\u000c\u0085\u2028\u2029]/.test(c);
 const isWhitespace = (c: string | undefined) => c !== undefined && /\s/u.test(c);
 
 function removingLeadingSubject(text: string): string {

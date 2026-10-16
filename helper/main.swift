@@ -1,4 +1,4 @@
-// Reads the focused Outlook compose window through Accessibility and prints it as one JSON object.
+// Reads the focused Outlook compose window, and seals Composer history, for the extension.
 // Runs as a child of Tinycast, so macOS checks Tinycast's Accessibility grant, not this binary's.
 
 import AppKit
@@ -6,6 +6,7 @@ import ApplicationServices
 
 let outlookBundleIdentifier = "com.microsoft.Outlook"
 let maximumElements = 800
+nonisolated(unsafe) let emailAddress = #/[\p{L}\p{N}.!#$%&'*+\/=?^_`{|}~-]+@[\p{L}\p{N}](?:[\p{L}\p{N}.-]*[\p{L}\p{N}])?/#
 let subjectFieldIdentifier = "subjectTextField"
 let recipientFieldIdentifiers: Set<String> = ["toTextField", "ccTextField", "bccTextField"]
 
@@ -88,7 +89,7 @@ struct Access {
                 }
             }
             let childCount = appendChildren(of: candidate, to: &queue)
-            let addresses = texts.filter { $0.contains("@") }
+            let addresses = texts.filter { $0.firstMatch(of: emailAddress) != nil }
             if !addresses.isEmpty {
                 candidates.append(contentsOf: addresses)
             } else if childCount == 0 {
@@ -216,9 +217,29 @@ func readOutlook() -> Never {
     emit(result)
 }
 
+/// stdin in, stdout out, so history never touches an argument list another process can read.
+func sealHistory(opening: Bool) -> Never {
+    let input = FileHandle.standardInput.readDataToEndOfFile()
+    do {
+        let key = try HistorySealing.keychainKey(creating: !opening)
+        if opening {
+            let sealed = String(decoding: input, as: UTF8.self)
+            FileHandle.standardOutput.write(try HistorySealing.open(sealed, using: key))
+        } else {
+            FileHandle.standardOutput.write(Data(try HistorySealing.seal(input, using: key).utf8))
+        }
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data(HistorySealing.describe(error).utf8))
+        exit(3)
+    }
+}
+
 switch CommandLine.arguments.dropFirst().first {
 case "outlook-context": readOutlook()
+case "seal": sealHistory(opening: false)
+case "open": sealHistory(opening: true)
 default:
-    FileHandle.standardError.write(Data("usage: composer-helper outlook-context\n".utf8))
+    FileHandle.standardError.write(Data("usage: composer-helper outlook-context | seal | open\n".utf8))
     exit(2)
 }

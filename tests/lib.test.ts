@@ -4,8 +4,10 @@ import { detectedAudience, normalizedDomains, recipientDomains } from "../src/li
 import { claudeArguments, claudeEnvironment, parseStreamLine } from "../src/lib/claude";
 import { captureTitle, outlookContext, outlookRecipients, textBoundaries } from "../src/lib/context";
 import { composerBody, composerDraft, naturalVoice, preparedForDelivery } from "../src/lib/output";
+import { plainText, quotedText } from "../src/lib/markdown";
 import { captureFromReply } from "../src/lib/outlook";
-import { compositionMessage, contextMessage, flattenedPrompt, rewriteMessage, systemInstructions } from "../src/lib/prompt";
+import { Conversation, HistoryBackend, historyStore } from "../src/lib/history-store";
+import { cleanupSource, compositionMessage, contextMessage, flattenedPrompt, rewriteMessage, systemInstructions } from "../src/lib/prompt";
 
 test("every Outlook recipient chip is captured once, in order, without presence text", () => {
   const recipients = outlookRecipients([
@@ -205,4 +207,110 @@ test("a helper reply becomes a capture with UTF-16 ranges", () => {
   assert.equal(captureFromReply({ status: "ok", body: "x", location: 0, length: 5 }).status, "no-editor");
   assert.equal(captureFromReply({ status: "not-trusted" }).status, "not-trusted");
   assert.equal(captureFromReply({ status: "weird" }).status, "unavailable");
+});
+
+test("cleanup compares against the previous draft, else the selection, never the request", () => {
+  const turns = [
+    { role: "user" as const, text: "Subject: Budget\nwrite it" },
+    { role: "assistant" as const, text: "Ready—send it." },
+  ];
+  assert.equal(cleanupSource("compose", "", []), "");
+  assert.equal(cleanupSource("rewrite", "my text", []), "my text");
+  assert.equal(cleanupSource("compose", "", turns), "Ready—send it.");
+  assert.equal(composerDraft("Subject: Budget\n\nHere it is.", cleanupSource("compose", "", [])), "Here it is.");
+});
+
+test("CRLF counts as one line break, as Swift counts it", () => {
+  const body = "Rough notes\r\nSignature";
+  const boundaries = textBoundaries(body, { location: 0, length: 13 });
+  assert.equal(boundaries?.selectedLineBreakCount, 1);
+  assert.equal(preparedForDelivery("Tidy notes.", true, false, boundaries), "Tidy notes.\n");
+  assert.equal(textBoundaries("a\r\n\r\nb", { location: 1, length: 0 })?.followingLineBreakCount, 2);
+});
+
+function memoryBackend(failOpen = false) {
+  const state: { value?: string; seals: number } = { seals: 0 };
+  const backend: HistoryBackend = {
+    get: async () => state.value,
+    set: async (value) => {
+      state.value = value;
+    },
+    remove: async () => {
+      state.value = undefined;
+    },
+    seal: async (plaintext) => {
+      state.seals += 1;
+      return "sealed:" + Buffer.from(plaintext).toString("base64");
+    },
+    open: async (sealed) => {
+      if (failOpen) throw new Error("no-key");
+      return Buffer.from(sealed.slice("sealed:".length), "base64").toString();
+    },
+  };
+  return { state, backend };
+}
+
+const day = 24 * 60 * 60 * 1000;
+const conversation = (id: string, updatedAt: number): Conversation => ({
+  id, mode: "rewrite", createdAt: updatedAt, updatedAt, audience: "external",
+  turns: [{ role: "user", text: "secret " + id }, { role: "assistant", text: "draft " + id }],
+});
+
+test("history is stored sealed, never as plaintext", async () => {
+  const { state, backend } = memoryBackend();
+  const store = historyStore(backend, () => 10 * day);
+  await store.upsert(conversation("a", 10 * day));
+  assert.ok(state.value?.startsWith("sealed:") && !state.value.includes("secret"));
+  assert.deepEqual((await store.load()).map((item) => item.id), ["a"]);
+});
+
+test("expired history is deleted from disk when read, not just hidden", async () => {
+  const { state, backend } = memoryBackend();
+  let now = 10 * day;
+  const store = historyStore(backend, () => now);
+  await store.upsert(conversation("old", now));
+  now += 8 * day;
+  assert.deepEqual(await store.load(), []);
+  assert.equal(state.value, undefined);
+});
+
+test("unopenable history fails closed instead of being overwritten", async () => {
+  const { state, backend } = memoryBackend(true);
+  state.value = "sealed:older";
+  const store = historyStore(backend, () => 10 * day);
+  await assert.rejects(store.load());
+  await assert.rejects(store.upsert(conversation("new", 10 * day)));
+  assert.equal(state.value, "sealed:older");
+  await store.clear();
+  assert.equal(state.value, undefined);
+});
+
+test("concurrent saves are queued so neither is lost", async () => {
+  const { backend } = memoryBackend();
+  const store = historyStore(backend, () => 10 * day);
+  await Promise.all([store.upsert(conversation("a", 10 * day)), store.upsert(conversation("b", 10 * day + 1))]);
+  assert.deepEqual((await store.load()).map((item) => item.id).sort(), ["a", "b"]);
+});
+
+test("drafts and quoted mail render as text, never as images, links or HTML", () => {
+  const hostile = '![x](https://evil.example/p.png)\n<img src="https://evil.example/q.png">\n# Heading\n[link](https://e.x)';
+  for (const rendered of [plainText(hostile), quotedText(hostile)]) {
+    for (const line of rendered.split("\n")) {
+      const body = line.replace(/^> /, "").trim();
+      assert.ok(!body.startsWith("![") && !body.startsWith("<img") && !body.startsWith("#"), line);
+    }
+    assert.ok(!/(^|[^\\])!\[/.test(rendered) && !/(^|[^\\])</.test(rendered));
+  }
+  assert.equal(plainText("Hi,\nThanks"), "Hi,  \nThanks");
+  assert.equal(quotedText("a\r\nb"), "> a\n> b");
+});
+
+test("a newline is any Unicode line or paragraph separator", () => {
+  const body = "Hi Draft\u0085After";
+  assert.deepEqual(textBoundaries(body, { location: 3, length: 5 }), {
+    startsAtLineStart: true,
+    endsAtLineEnd: true,
+    followingLineBreakCount: 1,
+    selectedLineBreakCount: 0,
+  });
 });

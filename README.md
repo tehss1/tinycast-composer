@@ -12,8 +12,11 @@ without a fork, and in Raycast itself.
 - Tinycast with **Extensions** turned on and **Accessibility** granted (Composer uses it to read the
   selection and the Outlook draft).
 - [Claude Code](https://docs.claude.com/en/docs/claude-code/setup), signed in once with `claude` in
-  Terminal. Composer removes `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` before running it, so it
-  always uses the subscription login.
+  Terminal. Composer removes `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the environment it
+  passes on, so a key exported in your shell profile is not used. Claude Code's own configuration
+  still applies: an `apiKeyHelper` or `env` block in `~/.claude/settings.json`,
+  `CLAUDE_CODE_OAUTH_TOKEN`, a Bedrock or Vertex setting, or `ANTHROPIC_BASE_URL` set there will
+  route Composer the same way. With none of those, it runs on your Claude subscription.
 
 ## Install
 
@@ -39,20 +42,30 @@ Press the shortcut in Outlook (or any app):
 - **Caret only:** type what to write and press Return. With a quoted email below the caret, an
   empty Return drafts a reply from the thread alone.
 
-Type a change and press Return to refine; every draft stays in the list. With the search bar empty,
-Return replaces the selection (or inserts at the caret) with the highlighted draft; ⌘Return always
-does.
+Type a change and press Return to refine; every draft stays in the list. A change typed while the
+first rewrite is still running is sent as soon as it finishes. With the search bar empty, Return
+replaces the selection (or inserts at the caret) with the highlighted draft; ⌘Return always does.
+Pasting ends the command, because the selection it was replacing is gone; continue the conversation
+from **Composer History**.
 
 | Key | Action |
 | --- | --- |
-| ⌘⇧A | Audience: Automatic, Internal or External |
-| ⌘⇧M | Model for this conversation |
+| ⌘⇧A | Switch audience: Automatic, Internal, External |
+| ⌘⇧M | Switch model for this conversation: Sonnet, Opus, Haiku |
 | ⌘I | Show the email context Claude received |
 | ⌘⇧C | Copy the draft |
-| ⌘. | Stop |
+| ⌃C | Stop |
+
+The action panel also has **Choose Audience** and **Choose Model** to pick one directly.
 
 **Composer History** lists the last seven days of conversations. You can paste, copy or continue
-any of them. The quoted Outlook thread is never saved.
+any of them. The quoted Outlook thread is never saved. History is encrypted (AES-GCM) with a key
+kept in your login Keychain under `tech.uncomplicate.tinycast-composer`; anything older than seven
+days is deleted the next time history is read. If the key is missing or can't be read, Composer
+refuses to save rather than overwrite what it can't open, and History offers to delete it.
+
+macOS may ask whether `composer-helper` can use the Keychain item the first time, and again after
+the helper is rebuilt, because the ad-hoc signature changes. Choose **Always Allow**.
 
 ## Preferences
 
@@ -62,10 +75,10 @@ common places).
 
 ## How the Outlook read works
 
-`assets/composer-helper` is a small Swift program (source in `helper/main.swift`) that reads the
-focused Outlook compose window through Accessibility, within a 750 ms budget, and prints JSON. It
-runs as a child of Tinycast, so it uses Tinycast's Accessibility grant. Rebuild it on a Mac with
-`scripts/build-helper.sh`.
+`assets/composer-helper` is a small Swift program (source in `helper/`) that reads the focused
+Outlook compose window through Accessibility, within a 750 ms budget, and prints JSON. It also seals
+and opens the history. It runs as a child of Tinycast, so it uses Tinycast's Accessibility grant.
+Rebuild it on a Mac with `scripts/build-helper.sh`.
 
 Delivery uses Tinycast's paste, so Outlook must still have the selection or caret where it was when
 you pressed the shortcut. The draft is formatted for the spot it lands in: short paragraphs for

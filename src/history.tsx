@@ -1,44 +1,69 @@
 import { Action, ActionPanel, Alert, Clipboard, confirmAlert, Icon, List } from "@raycast/api";
 import { useEffect, useState } from "react";
 import { audienceTitle } from "./lib/audience";
-import {
-  clearConversations,
-  Conversation,
-  conversationTitle,
-  latestDraft,
-  loadConversations,
-  removeConversation,
-  retentionDays,
-} from "./lib/history";
+import { Conversation, conversationTitle, history, latestDraft, retentionDays } from "./lib/history";
 import { Composer } from "./composer";
+import { plainText, quotedText } from "./lib/markdown";
 
 function transcript(conversation: Conversation): string {
   const lines: string[] = [];
-  if (conversation.recipient) lines.push(`**To:** ${conversation.recipient}  `);
+  if (conversation.recipient) lines.push(`**To:** ${plainText(conversation.recipient)}  `);
   lines.push(`**Audience:** ${audienceTitle[conversation.audience]}`, "");
   let draft = 0;
   conversation.turns.forEach((turn, index) => {
     if (turn.role === "user") {
       const label = index === 0 && conversation.mode === "rewrite" ? "Selected text" : "Request";
-      lines.push(`**${label}**`, "", ...turn.text.split("\n").map((line) => "> " + line), "");
+      lines.push(`**${label}**`, "", quotedText(turn.text), "");
     } else {
       draft += 1;
-      lines.push(`**Draft ${draft}**`, "", turn.text.replace(/\n/g, "  \n"), "", "---", "");
+      lines.push(`**Draft ${draft}**`, "", plainText(turn.text), "", "---", "");
     }
   });
   return lines.join("\n");
 }
 
-export default function Command() {
-  const [conversations, setConversations] = useState<Conversation[] | undefined>();
+type Loaded = { conversations: Conversation[] } | { error: string };
 
-  const reload = () => loadConversations().then(setConversations);
+export default function Command() {
+  const [loaded, setLoaded] = useState<Loaded | undefined>();
+
+  const reload = () =>
+    history.load().then(
+      (conversations) => setLoaded({ conversations }),
+      (error: Error) => setLoaded({ error: error.message }),
+    );
   useEffect(() => {
     reload();
   }, []);
 
+  const deleteAll = async () => {
+    const confirmed = await confirmAlert({
+      title: "Delete every saved Composer conversation?",
+      primaryAction: { title: "Delete All", style: Alert.ActionStyle.Destructive },
+    });
+    if (confirmed) history.clear().then(reload);
+  };
+
+  if (loaded && "error" in loaded) {
+    return (
+      <List>
+        <List.EmptyView
+          icon={Icon.Lock}
+          title="Composer history can't be opened"
+          description={`Its Keychain key is unavailable (${loaded.error}). Nothing new is saved until you reset it.`}
+          actions={
+            <ActionPanel>
+              <Action title="Delete Saved History" icon={Icon.Trash} style={Action.Style.Destructive} onAction={deleteAll} />
+            </ActionPanel>
+          }
+        />
+      </List>
+    );
+  }
+
+  const conversations = loaded?.conversations;
   return (
-    <List isLoading={!conversations} isShowingDetail={!!conversations?.length} searchBarPlaceholder="Search drafts…">
+    <List isLoading={!loaded} isShowingDetail={!!conversations?.length} searchBarPlaceholder="Search drafts…">
       <List.EmptyView
         icon={Icon.Clock}
         title="No drafts yet"
@@ -60,7 +85,7 @@ export default function Command() {
                   title="Continue Conversation"
                   icon={Icon.Bubble}
                   shortcut={{ modifiers: ["cmd"], key: "return" }}
-                  target={<Composer resume={conversation} />}
+                  target={<Composer resume={conversation} onSaved={reload} />}
                 />
                 <Action.CopyToClipboard title="Copy Latest Draft" content={draft} />
                 <Action
@@ -68,20 +93,14 @@ export default function Command() {
                   icon={Icon.Trash}
                   style={Action.Style.Destructive}
                   shortcut={{ modifiers: ["ctrl"], key: "x" }}
-                  onAction={() => removeConversation(conversation.id).then(reload)}
+                  onAction={() => history.remove(conversation.id).then(reload)}
                 />
                 <Action
                   title="Delete All Conversations"
                   icon={Icon.Trash}
                   style={Action.Style.Destructive}
                   shortcut={{ modifiers: ["ctrl", "shift"], key: "x" }}
-                  onAction={async () => {
-                    const confirmed = await confirmAlert({
-                      title: "Delete every saved Composer conversation?",
-                      primaryAction: { title: "Delete All", style: Alert.ActionStyle.Destructive },
-                    });
-                    if (confirmed) clearConversations().then(reload);
-                  }}
+                  onAction={deleteAll}
                 />
               </ActionPanel>
             }
