@@ -51,6 +51,7 @@ const models = [
   { id: "haiku", title: "Haiku" },
 ];
 
+const deliveryWait = 2000;
 const installURL = "https://docs.claude.com/en/docs/claude-code/setup";
 
 interface Failure {
@@ -121,7 +122,7 @@ function newID(): string {
 export function Composer(props: { resume?: Conversation; onSaved?: () => void }) {
   const preferences = getPreferenceValues<Preferences>();
   const { push } = useNavigation();
-  const [session, setSession] = useState<Session | undefined>(props.resume && resumedSession(props.resume));
+  const [session, setSession] = useState<Session | undefined>();
   const [turns, setTurns] = useState<Turn[]>(props.resume?.turns ?? []);
   const [query, setQuery] = useState("");
   const [streaming, setStreaming] = useState<string | undefined>();
@@ -148,12 +149,19 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
   const running = streaming !== undefined;
 
   useEffect(() => {
-    warmHistoryKey();
-    if (props.resume) return;
+    const keyReady = warmHistoryKey();
     let live = true;
-    capture(preferences)
-      .catch((): Session => ({ mode: "compose", source: "", toOutlook: false, insertsAtCaret: true }))
-      .then((captured) => {
+    if (props.resume) {
+      keyReady.then(() => live && setSession(resumedSession(props.resume!)));
+      return () => {
+        live = false;
+      };
+    }
+    const captured = capture(preferences).catch(
+      (): Session => ({ mode: "compose", source: "", toOutlook: false, insertsAtCaret: true }),
+    );
+    Promise.all([captured, keyReady])
+      .then(([captured]) => {
         if (!live) return;
         setSession(captured);
         if (captured.notice) showToast({ style: Toast.Style.Failure, title: captured.notice });
@@ -316,10 +324,17 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
     const text = preparedForDelivery(draft, session?.toOutlook ?? false, session?.insertsAtCaret ?? false, session?.boundaries);
     if (delivering.current) return;
     delivering.current = true;
-    // Hiding the palette to paste can end the command, so the draft is saved first.
-    await saving.current;
-    // Leaving Composer while the save finished abandons the paste, rather than landing it elsewhere.
+    // Hiding the palette to paste can end the command, so the draft is saved first, but only briefly.
+    const saved = await Promise.race([
+      saving.current.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), deliveryWait)),
+    ]);
     if (!mounted.current) return;
+    if (!saved) {
+      delivering.current = false;
+      showToast({ style: Toast.Style.Failure, title: "Still saving to Composer History. Try again in a moment." });
+      return;
+    }
     try {
       await Clipboard.paste(text);
     } catch (error) {

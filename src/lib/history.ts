@@ -10,8 +10,11 @@ const storageKey = "conversations.sealed";
 const keychainTimeout = 120_000;
 
 /// A Keychain prompt hides Tinycast and ends the command, so it is raised before Claude runs.
-export function warmHistoryKey(): void {
-  runHelper(environment.assetsPath, ["probe"], undefined, keychainTimeout).catch(() => undefined);
+export function warmHistoryKey(): Promise<void> {
+  return runHelper(environment.assetsPath, ["probe"], undefined, keychainTimeout).then(
+    () => undefined,
+    () => undefined,
+  );
 }
 
 export const history = historyStore({

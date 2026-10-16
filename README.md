@@ -68,7 +68,8 @@ refuses to save rather than overwrite what it can't open; History offers to try 
 
 macOS may ask whether `composer-helper` can use the Keychain item after the helper is rebuilt,
 because its ad-hoc signature changes. Composer checks the key as it opens, so the prompt comes before
-any drafting; Tinycast closes while it is up. Choose **Always Allow**, then open Composer again.
+any drafting; Tinycast closes while it is up, and History does the same. Choose **Always Allow**,
+then open Composer again; **Allow** or **Deny** brings the prompt back next time.
 
 ## Preferences
 
