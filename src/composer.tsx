@@ -29,10 +29,9 @@ import {
   cleanupSource,
   compositionMessage,
   contextOnlyInstruction,
-  flattenedPrompt,
+  claudePrompt,
   Mode,
   rewriteMessage,
-  safetyInstructions,
   systemInstructions,
   Turn,
 } from "./lib/prompt";
@@ -133,6 +132,7 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
   const run = useRef<ClaudeRun | undefined>(undefined);
   const pendingRequest = useRef<string | undefined>(undefined);
   const queuedRequest = useRef<string | undefined>(undefined);
+  const saving = useRef<Promise<void>>(Promise.resolve());
   const generation = useRef(0);
   const conversationID = useRef(props.resume?.id ?? newID());
   const createdAt = useRef(props.resume?.createdAt ?? Date.now());
@@ -198,8 +198,7 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
           model,
           effort: preferences.effort || undefined,
           workspace: environment.supportPath,
-          prompt: flattenedPrompt(instructions, promptTurns),
-          systemPrompt: safetyInstructions,
+          ...claudePrompt(instructions, promptTurns),
         },
         (text) => {
           if (generation.current === token) setStreaming(text);
@@ -223,7 +222,7 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
           setTurns(next);
           setStreaming(undefined);
           setSelectedID(`draft-${next.filter((turn) => turn.role === "assistant").length}`);
-          history
+          const save = history
             .upsert({
               id: conversationID.current,
               mode: session.mode,
@@ -235,9 +234,10 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
               audience,
               turns: next,
             })
-            .then(props.onSaved, () =>
-              showToast({ style: Toast.Style.Failure, title: "Couldn't save this draft to Composer History" }),
-            );
+            .then(props.onSaved, () => {
+              showToast({ style: Toast.Style.Failure, title: "Couldn't save this draft to Composer History" });
+            });
+          saving.current = saving.current.then(() => save);
         },
         (error: Error) => {
           if (generation.current !== token) return;
@@ -287,7 +287,11 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
     run.current?.cancel();
     generation.current += 1;
     setStreaming(undefined);
-    setFailure({ message: "Stopped before the draft finished.", request: pendingRequest.current, stopped: true });
+    setFailure({
+      message: "Stopped before the draft finished.",
+      request: pendingRequest.current ?? queuedRequest.current,
+      stopped: true,
+    });
     setSelectedID("failure");
   };
 
@@ -300,6 +304,7 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
     const text = preparedForDelivery(draft, session?.toOutlook ?? false, session?.insertsAtCaret ?? false, session?.boundaries);
     await Clipboard.paste(text);
     // The selection and line boundaries are spent once pasted; History continues the conversation.
+    await saving.current;
     await popToRoot();
   };
 

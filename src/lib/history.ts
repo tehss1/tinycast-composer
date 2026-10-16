@@ -6,11 +6,13 @@ export { conversationTitle, latestDraft, retentionDays } from "./history-store";
 export type { Conversation } from "./history-store";
 
 const storageKey = "conversations.sealed";
+/// Long enough to answer the Keychain's "allow access" prompt after the helper is rebuilt.
+const keychainTimeout = 120_000;
 
 export const history = historyStore({
   get: () => LocalStorage.getItem<string>(storageKey),
   set: (value) => LocalStorage.setItem(storageKey, value),
   remove: () => LocalStorage.removeItem(storageKey),
-  seal: (plaintext) => runHelper(environment.assetsPath, ["seal"], plaintext),
-  open: (sealed) => runHelper(environment.assetsPath, ["open"], sealed),
+  seal: (plaintext) => runHelper(environment.assetsPath, ["seal"], plaintext, keychainTimeout),
+  open: (sealed) => runHelper(environment.assetsPath, ["open"], sealed, keychainTimeout),
 });

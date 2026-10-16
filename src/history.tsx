@@ -7,7 +7,7 @@ import { plainText, quotedText } from "./lib/markdown";
 
 function transcript(conversation: Conversation): string {
   const lines: string[] = [];
-  if (conversation.recipient) lines.push(`**To:** ${plainText(conversation.recipient)}  `);
+  if (conversation.recipient) lines.push(`**To:** ${plainText(conversation.recipient)}`, "");
   lines.push(`**Audience:** ${audienceTitle[conversation.audience]}`, "");
   let draft = 0;
   conversation.turns.forEach((turn, index) => {
@@ -50,9 +50,10 @@ export default function Command() {
         <List.EmptyView
           icon={Icon.Lock}
           title="Composer history can't be opened"
-          description={`Its Keychain key is unavailable (${loaded.error}). Nothing new is saved until you reset it.`}
+          description={`Its Keychain key couldn't be read (${loaded.error}). If macOS asked for access, choose Always Allow and try again. Nothing new is saved until it opens.`}
           actions={
             <ActionPanel>
+              <Action title="Try Again" icon={Icon.RotateClockwise} onAction={reload} />
               <Action title="Delete Saved History" icon={Icon.Trash} style={Action.Style.Destructive} onAction={deleteAll} />
             </ActionPanel>
           }

@@ -3,14 +3,21 @@ export function literalMarkdown(text: string): string {
   return text.replace(/[\\`*_{}[\]()<>#+\-.!|~&]/g, "\\$&");
 }
 
-/// Markdown joins single newlines, which would run an email's short lines together.
+/// A line separator keeps an email's short lines apart; Markdown would join them with a space.
 export function plainText(text: string): string {
-  return literalMarkdown(text).replace(/\r\n|\r|\n/g, "  \n");
+  return literalMarkdown(text)
+    .split(/\r\n|\r|\n/)
+    .reduce((joined, line, index, lines) => {
+      if (index === 0) return line;
+      const paragraphBreak = !line.trim() || !lines[index - 1].trim();
+      return joined + (paragraphBreak ? "\n" : "\u2028") + line;
+    }, "");
 }
 
+/// A blank quote line stays blank, since a bare ">" would render as a literal character.
 export function quotedText(text: string): string {
   return literalMarkdown(text)
     .split(/\r\n|\r|\n/)
-    .map((line) => "> " + line)
+    .map((line) => (line.trim() ? "> " + line : ""))
     .join("\n");
 }

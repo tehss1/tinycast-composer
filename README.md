@@ -62,7 +62,7 @@ The action panel also has **Choose Audience** and **Choose Model** to pick one d
 any of them. The quoted Outlook thread is never saved. History is encrypted (AES-GCM) with a key
 kept in your login Keychain under `tech.uncomplicate.tinycast-composer`; anything older than seven
 days is deleted the next time history is read. If the key is missing or can't be read, Composer
-refuses to save rather than overwrite what it can't open, and History offers to delete it.
+refuses to save rather than overwrite what it can't open; History offers to try again or delete it.
 
 macOS may ask whether `composer-helper` can use the Keychain item the first time, and again after
 the helper is rebuilt, because the ad-hoc signature changes. Choose **Always Allow**.
