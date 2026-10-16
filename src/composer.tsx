@@ -133,6 +133,7 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
   const pendingRequest = useRef<string | undefined>(undefined);
   const queuedRequest = useRef<string | undefined>(undefined);
   const saving = useRef<Promise<void>>(Promise.resolve());
+  const delivering = useRef(false);
   const generation = useRef(0);
   const conversationID = useRef(props.resume?.id ?? newID());
   const createdAt = useRef(props.resume?.createdAt ?? Date.now());
@@ -213,7 +214,7 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
             setStreaming(undefined);
             setFailure({
               message: "Claude's reply was empty once its stock greeting was removed. Try again.",
-              request: pendingRequest.current,
+              request: pendingRequest.current ?? queuedRequest.current,
             });
             setSelectedID("failure");
             return;
@@ -222,27 +223,26 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
           setTurns(next);
           setStreaming(undefined);
           setSelectedID(`draft-${next.filter((turn) => turn.role === "assistant").length}`);
-          const save = history
-            .upsert({
-              id: conversationID.current,
-              mode: session.mode,
-              createdAt: createdAt.current,
-              updatedAt: Date.now(),
-              appName: session.appName ?? props.resume?.appName,
-              subject: session.context?.subject ?? props.resume?.subject,
-              recipient: session.context?.recipient ?? props.resume?.recipient,
-              audience,
-              turns: next,
-            })
-            .then(props.onSaved, () => {
-              showToast({ style: Toast.Style.Failure, title: "Couldn't save this draft to Composer History" });
-            });
-          saving.current = saving.current.then(() => save);
+          const save = history.upsert({
+            id: conversationID.current,
+            mode: session.mode,
+            createdAt: createdAt.current,
+            updatedAt: Date.now(),
+            appName: session.appName ?? props.resume?.appName,
+            subject: session.context?.subject ?? props.resume?.subject,
+            recipient: session.context?.recipient ?? props.resume?.recipient,
+            audience,
+            turns: next,
+          });
+          saving.current = saving.current.then(() => save.catch(() => undefined));
+          save.then(props.onSaved, () => {
+            showToast({ style: Toast.Style.Failure, title: "Couldn't save this draft to Composer History" });
+          });
         },
         (error: Error) => {
           if (generation.current !== token) return;
           setStreaming(undefined);
-          setFailure({ message: error.message, request: pendingRequest.current });
+          setFailure({ message: error.message, request: pendingRequest.current ?? queuedRequest.current });
           setSelectedID("failure");
         },
       );
@@ -263,6 +263,10 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
 
   const send = () => {
     const request = query.trim();
+    if (!session) {
+      showToast({ title: "Still reading the draft. Press Return again in a moment." });
+      return;
+    }
     if (session?.mode === "rewrite" && turns.length === 0) {
       if (request) {
         queuedRequest.current = request;
@@ -302,9 +306,12 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
 
   const deliver = async (draft: string) => {
     const text = preparedForDelivery(draft, session?.toOutlook ?? false, session?.insertsAtCaret ?? false, session?.boundaries);
+    if (delivering.current) return;
+    delivering.current = true;
+    // Hiding the palette to paste can end the command, so the draft is saved first.
+    await saving.current;
     await Clipboard.paste(text);
     // The selection and line boundaries are spent once pasted; History continues the conversation.
-    await saving.current;
     await popToRoot();
   };
 

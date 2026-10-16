@@ -190,6 +190,7 @@ test("Claude runs on the subscription with tools off", () => {
   const args = claudeArguments({ executable: "/x/claude", model: "sonnet", workspace: "/w", prompt: "p", systemPrompt: "s", effort: "low" });
   assert.deepEqual(args.slice(args.indexOf("--tools"), args.indexOf("--tools") + 2), ["--tools", ""]);
   assert.ok(args.includes("--no-session-persistence") && args.at(-1) === "low");
+  assert.ok(args.includes("--safe-mode"), "the user's CLAUDE.md and hooks must not see email text");
   const env = claudeEnvironment({ ANTHROPIC_API_KEY: "k", ANTHROPIC_AUTH_TOKEN: "t", HOME: "/h", PATH: "/usr/bin" }, "/h/.local/bin/claude");
   assert.equal(env.ANTHROPIC_API_KEY, undefined);
   assert.equal(env.ANTHROPIC_AUTH_TOKEN, undefined);

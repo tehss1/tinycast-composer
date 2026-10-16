@@ -34,6 +34,8 @@ export interface ClaudeOptions {
 export function claudeArguments(options: ClaudeOptions): string[] {
   const args = [
     "-p",
+    // Keeps the user's CLAUDE.md, hooks and plugins away from email text; sign-in still works.
+    "--safe-mode",
     "--model", options.model,
     "--output-format", "stream-json",
     "--verbose",
@@ -144,6 +146,9 @@ export function runClaude(options: ClaudeOptions, onText: (text: string) => void
       if (failure) return reject(new Error(failure));
       const text = finalText ?? streamed;
       if (code === 0 && text.trim()) return resolve(text);
+      if (stderr.includes("unknown option '--")) {
+        return reject(new Error("This Claude Code is too old for Composer. Run `claude update` in Terminal."));
+      }
       const detail = stderr.trim().split("\n").slice(-3).join(" ");
       reject(new Error(detail || `claude exited with status ${code}`));
     });

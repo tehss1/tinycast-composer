@@ -17,6 +17,8 @@ without a fork, and in Raycast itself.
   still applies: an `apiKeyHelper` or `env` block in `~/.claude/settings.json`,
   `CLAUDE_CODE_OAUTH_TOKEN`, a Bedrock or Vertex setting, or `ANTHROPIC_BASE_URL` set there will
   route Composer the same way. With none of those, it runs on your Claude subscription.
+- A Claude Code recent enough to have `--safe-mode` (`claude update`). Composer runs it in safe mode
+  with no tools, so your `CLAUDE.md`, hooks, plugins and MCP servers never see the email.
 
 ## Install
 

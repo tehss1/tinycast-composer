@@ -45,18 +45,20 @@ export default function Command() {
   };
 
   if (loaded && "error" in loaded) {
+    // Tinycast reads actions from the List or a row, never from an EmptyView.
     return (
-      <List>
+      <List
+        actions={
+          <ActionPanel>
+            <Action title="Try Again" icon={Icon.RotateClockwise} onAction={reload} />
+            <Action title="Delete Saved History" icon={Icon.Trash} style={Action.Style.Destructive} onAction={deleteAll} />
+          </ActionPanel>
+        }
+      >
         <List.EmptyView
           icon={Icon.Lock}
           title="Composer history can't be opened"
           description={`Its Keychain key couldn't be read (${loaded.error}). If macOS asked for access, choose Always Allow and try again. Nothing new is saved until it opens.`}
-          actions={
-            <ActionPanel>
-              <Action title="Try Again" icon={Icon.RotateClockwise} onAction={reload} />
-              <Action title="Delete Saved History" icon={Icon.Trash} style={Action.Style.Destructive} onAction={deleteAll} />
-            </ActionPanel>
-          }
         />
       </List>
     );
