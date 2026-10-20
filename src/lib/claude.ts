@@ -2,6 +2,7 @@ import { spawn, ChildProcess } from "child_process";
 import { existsSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+import { Screenshot } from "./screenshot";
 
 /// A GUI app inherits no login shell, and the native installer lands outside Tinycast's search list.
 export function claudeCandidates(home: string): string[] {
@@ -29,6 +30,7 @@ export interface ClaudeOptions {
   workspace: string;
   prompt: string;
   systemPrompt: string;
+  screenshot?: Screenshot;
 }
 
 export function claudeArguments(options: ClaudeOptions): string[] {
@@ -37,6 +39,7 @@ export function claudeArguments(options: ClaudeOptions): string[] {
     // Keeps the user's CLAUDE.md, hooks and plugins away from email text; sign-in still works.
     "--safe-mode",
     "--model", options.model,
+    "--input-format", "stream-json",
     "--output-format", "stream-json",
     "--verbose",
     "--include-partial-messages",
@@ -52,6 +55,15 @@ export function claudeArguments(options: ClaudeOptions): string[] {
   ];
   if (options.effort) args.push("--effort", options.effort);
   return args;
+}
+
+export function claudeInput(options: Pick<ClaudeOptions, "prompt" | "screenshot">): string {
+  const content: object[] = [];
+  if (options.screenshot) {
+    content.push({ type: "image", source: { type: "base64", media_type: "image/png", data: options.screenshot.png } });
+  }
+  content.push({ type: "text", text: options.prompt });
+  return JSON.stringify({ type: "user", message: { role: "user", content } }) + "\n";
 }
 
 /// API-key variables would silently move billing off the signed-in Claude subscription.
@@ -152,7 +164,8 @@ export function runClaude(options: ClaudeOptions, onText: (text: string) => void
       const detail = stderr.trim().split("\n").slice(-3).join(" ");
       reject(new Error(detail || `claude exited with status ${code}`));
     });
-    child.stdin?.write(options.prompt);
+    child.stdin?.on("error", (error: Error) => reject(error));
+    child.stdin?.write(claudeInput(options));
     child.stdin?.end();
   });
   return {

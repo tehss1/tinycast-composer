@@ -14,6 +14,7 @@ export interface Conversation {
   subject?: string;
   recipient?: string;
   audience: Audience;
+  screenshotAttached?: boolean;
   turns: Turn[];
 }
 

@@ -3,6 +3,7 @@ import {
   ActionPanel,
   Clipboard,
   clearSearchBar,
+  closeMainWindow,
   Color,
   Detail,
   environment,
@@ -25,6 +26,15 @@ import { Conversation, history, warmHistoryKey } from "./lib/history";
 import { composerDraft, preparedForDelivery } from "./lib/output";
 import { plainText, quotedText } from "./lib/markdown";
 import { outlookBundleId, readOutlook } from "./lib/outlook";
+import {
+  markedScreenshot,
+  pasteScreenshot,
+  readScreenshot,
+  Screenshot,
+  screenshotDraft,
+  screenshotInstructions,
+  screenshotPreview,
+} from "./lib/screenshot";
 import {
   cleanupSource,
   compositionMessage,
@@ -71,6 +81,8 @@ interface Session {
   toOutlook: boolean;
   insertsAtCaret: boolean;
   appName?: string;
+  bundleId?: string;
+  screenshot?: Screenshot;
   notice?: string;
 }
 
@@ -92,6 +104,7 @@ async function capture(preferences: Preferences): Promise<Session> {
         toOutlook: true,
         insertsAtCaret: !selection,
         appName,
+        bundleId: frontmost?.bundleId,
       };
     }
     notice =
@@ -106,6 +119,7 @@ async function capture(preferences: Preferences): Promise<Session> {
     toOutlook: frontmost?.bundleId === outlookBundleId,
     insertsAtCaret: !selection,
     appName,
+    bundleId: frontmost?.bundleId,
     notice,
   };
 }
@@ -121,7 +135,7 @@ function newID(): string {
 
 export function Composer(props: { resume?: Conversation; onSaved?: () => void }) {
   const preferences = getPreferenceValues<Preferences>();
-  const { push } = useNavigation();
+  const { push, pop } = useNavigation();
   const [session, setSession] = useState<Session | undefined>();
   const [turns, setTurns] = useState<Turn[]>(props.resume?.turns ?? []);
   const [query, setQuery] = useState("");
@@ -139,6 +153,7 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
   const generation = useRef(0);
   const conversationID = useRef(props.resume?.id ?? newID());
   const createdAt = useRef(props.resume?.createdAt ?? Date.now());
+  const usedScreenshot = useRef(props.resume?.screenshotAttached ?? false);
 
   const detected: Audience = useMemo(
     () => detectedAudience(session?.context?.recipient, preferences.internalDomains ?? ""),
@@ -160,10 +175,14 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
     const captured = capture(preferences).catch(
       (): Session => ({ mode: "compose", source: "", toOutlook: false, insertsAtCaret: true }),
     );
-    Promise.all([captured, keyReady])
-      .then(([captured]) => {
+    const screenshot = readScreenshot(environment.assetsPath).catch(() => {
+      if (live) showToast({ style: Toast.Style.Failure, title: "Couldn't read the clipboard image; continuing with text only" });
+      return undefined;
+    });
+    Promise.all([captured, keyReady, screenshot])
+      .then(([captured, , screenshot]) => {
         if (!live) return;
-        setSession(captured);
+        setSession({ ...captured, screenshot });
         if (captured.notice) showToast({ style: Toast.Style.Failure, title: captured.notice });
       });
     return () => {
@@ -197,12 +216,18 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
       const userText = first ? (session.mode === "rewrite" ? session.source : request || contextOnlyInstruction) : request;
       if (!userText) return;
       const promptTurns: Turn[] = [...turns, { role: "user" as const, text: userText }].map((turn, index): Turn => {
+        if (turn.role === "assistant" && session.screenshot) {
+          return { ...turn, text: markedScreenshot(turn.text, turn.screenshotOffset) };
+        }
         if (index !== 0) return turn;
         const text =
           session.mode === "rewrite" ? rewriteMessage(turn.text, session.context) : compositionMessage(turn.text, session.context);
         return { role: "user", text };
       });
-      const instructions = systemInstructions(session.mode, preferences.style ?? "", audience, !first);
+      const instructions = [
+        systemInstructions(session.mode, preferences.style ?? "", audience, !first),
+        session.screenshot ? screenshotInstructions : "",
+      ].filter(Boolean).join("\n\n");
       const token = ++generation.current;
       pendingRequest.current = request ?? (first ? queuedRequest.current : undefined);
       run.current?.cancel();
@@ -215,6 +240,7 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
           model,
           effort: preferences.effort || undefined,
           workspace: environment.supportPath,
+          screenshot: session.screenshot,
           ...claudePrompt(instructions, promptTurns),
         },
         (text) => {
@@ -225,7 +251,8 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
       current.promise.then(
         (text) => {
           if (generation.current !== token) return;
-          const draft = composerDraft(text.trim(), cleanupSource(session.mode, session.source, turns));
+          const placed = screenshotDraft(composerDraft(text.trim(), cleanupSource(session.mode, session.source, turns)));
+          const draft = placed.text;
           if (!draft.trim()) {
             setStreaming(undefined);
             setFailure({
@@ -235,10 +262,13 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
             setSelectedID("failure");
             return;
           }
-          const next: Turn[] = [...turns, { role: "user", text: userText }, { role: "assistant", text: draft }];
+          const next: Turn[] = [...turns, { role: "user", text: screenshotDraft(userText).text }, {
+            role: "assistant", text: draft, screenshotOffset: session.screenshot ? placed.screenshotOffset : undefined,
+          }];
           setTurns(next);
           setStreaming(undefined);
           setSelectedID(`draft-${next.filter((turn) => turn.role === "assistant").length}`);
+          usedScreenshot.current ||= !!session.screenshot;
           const save = history.upsert({
             id: conversationID.current,
             mode: session.mode,
@@ -248,6 +278,7 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
             subject: session.context?.subject ?? props.resume?.subject,
             recipient: session.context?.recipient ?? props.resume?.recipient,
             audience,
+            screenshotAttached: usedScreenshot.current || undefined,
             turns: next,
           });
           saving.current = saving.current.then(() => save.catch(() => undefined));
@@ -320,8 +351,10 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
   const cycleModel = () =>
     setModel(models[(models.findIndex((option) => option.id === model) + 1) % models.length].id);
 
-  const deliver = async (draft: string) => {
-    const text = preparedForDelivery(draft, session?.toOutlook ?? false, session?.insertsAtCaret ?? false, session?.boundaries);
+  const deliver = async (draft: string, screenshotOffset?: number) => {
+    const source = session?.screenshot ? markedScreenshot(draft, screenshotOffset) : draft;
+    const formatted = preparedForDelivery(source, session?.toOutlook ?? false, session?.insertsAtCaret ?? false, session?.boundaries);
+    const { text, screenshotOffset: offset } = screenshotDraft(formatted, false);
     if (delivering.current) return;
     delivering.current = true;
     // Hiding the palette to paste can end the command, so the draft is saved first, but only briefly.
@@ -336,7 +369,15 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
       return;
     }
     try {
-      await Clipboard.paste(text);
+      if (session?.screenshot) {
+        if (!session.bundleId) {
+          throw new Error("The original app couldn't be identified. Remove the screenshot to paste text only.");
+        }
+        const pasted = pasteScreenshot(environment.assetsPath, session.bundleId, text, session.screenshot, offset);
+        await Promise.all([pasted, closeMainWindow()]);
+      } else {
+        await Clipboard.paste(text);
+      }
     } catch (error) {
       delivering.current = false;
       showToast({ style: Toast.Style.Failure, title: "Couldn't paste the draft", message: String(error) });
@@ -350,9 +391,24 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
   const target = session?.appName ? ` in ${session.appName}` : "";
   const typing = query.trim().length > 0;
 
+  const dropScreenshot = () => {
+    if (running) stop();
+    setSession((current) => current ? { ...current, screenshot: undefined } : current);
+  };
+
   const contextMarkdown = () => {
     const context = session?.context;
     const lines = [`# ${captureTitle(context)}`, ""];
+    if (session?.screenshot) {
+      const image = session.screenshot;
+      lines.push(
+        `**Screenshot attached:** ${image.pixelWidth} × ${image.pixelHeight} pixels, ` +
+        `fitted to ${Math.round(image.displayWidth)} CSS pixels wide. ` +
+        "Claude chooses its inline position; ask to move it when refining.", "",
+      );
+    } else if (props.resume?.screenshotAttached) {
+      lines.push("**Screenshot was attached.** Its image was not saved in History and is unavailable here.", "");
+    }
     lines.push(`**Audience:** ${audienceTitle[audience]}${audienceChoice === "automatic" ? " (automatic)" : ""}`, "");
     if (context?.recipient) lines.push(`**To:** ${plainText(context.recipient)}`, "");
     if (context?.subject) lines.push(`**Subject:** ${plainText(context.subject)}`, "");
@@ -363,6 +419,14 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
 
   const sharedActions = (
     <>
+      {session?.screenshot ? (
+        <Action
+          title="Remove Screenshot"
+          icon={Icon.Trash}
+          shortcut={{ modifiers: ["cmd", "shift"], key: "x" }}
+          onAction={dropScreenshot}
+        />
+      ) : null}
       <Action
         title={`Switch Audience (${audienceChoice === "automatic" ? "Automatic" : audienceTitle[audience]})`}
         icon={Icon.TwoPeople}
@@ -399,7 +463,17 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
         title="Show Email Context"
         icon={Icon.Envelope}
         shortcut={{ modifiers: ["cmd"], key: "i" }}
-        onAction={() => push(<Detail navigationTitle="Email Context" markdown={contextMarkdown()} />)}
+        onAction={() => push(
+          <Detail
+            navigationTitle="Email Context"
+            markdown={contextMarkdown()}
+            actions={session?.screenshot ? (
+              <ActionPanel>
+                <Action title="Remove Screenshot" icon={Icon.Trash} onAction={() => { dropScreenshot(); pop(); }} />
+              </ActionPanel>
+            ) : undefined}
+          />,
+        )}
       />
     </>
   );
@@ -408,14 +482,14 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
     <Action title={turns.length === 0 ? "Write Draft" : "Send Request"} icon={Icon.Wand} onAction={send} />
   );
 
-  const draftActions = (draft: string) => (
+  const draftActions = (draft: string, screenshotOffset?: number) => (
     <ActionPanel>
       {typing ? sendAction : null}
       <Action
         title={`${deliverTitle}${target}`}
         icon={Icon.Clipboard}
         shortcut={{ modifiers: ["cmd"], key: "return" }}
-        onAction={() => deliver(draft)}
+        onAction={() => deliver(draft, screenshotOffset)}
       />
       {typing ? null : sendAction}
       <Action.CopyToClipboard title="Copy Draft" content={draft} shortcut={{ modifiers: ["cmd", "shift"], key: "c" }} />
@@ -432,13 +506,15 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
 
   const items: ReactElement[] = [];
   if (running) {
+    const draft = screenshotDraft(streaming || "…");
+    const preview = session?.screenshot ? screenshotPreview(draft.text, draft.screenshotOffset) : draft.text;
     items.push(
       <List.Item
         key="streaming"
         id="streaming"
         title="Writing…"
         icon={{ source: Icon.Pencil, tintColor: Color.Blue }}
-        detail={<List.Item.Detail markdown={plainText(streaming || "…")} />}
+        detail={<List.Item.Detail markdown={plainText(preview)} />}
         actions={
           <ActionPanel>
             {typing ? sendAction : null}
@@ -486,10 +562,13 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
       draftNumber += 1;
       const request = turns[index - 1]?.text ?? "";
       const label = index === 1 && session?.mode === "rewrite" ? "Rewrite of your selection" : request;
-      return { id: `draft-${draftNumber}`, number: draftNumber, draft: turn.text, label };
+      return { id: `draft-${draftNumber}`, number: draftNumber, draft: turn.text, screenshotOffset: turn.screenshotOffset, label };
     })
     .reverse();
   for (const row of rows) {
+    const preview = session?.screenshot
+      ? screenshotPreview(row.draft, row.screenshotOffset ?? row.draft.length)
+      : row.draft;
     items.push(
       <List.Item
         key={row.id}
@@ -497,8 +576,8 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
         title={`Draft ${row.number}`}
         subtitle={row.label}
         icon={row.number === drafts.length ? Icon.Document : Icon.Clock}
-        detail={<List.Item.Detail markdown={`${quotedText(row.label)}\n\n${plainText(row.draft)}`} />}
-        actions={draftActions(row.draft)}
+        detail={<List.Item.Detail markdown={`${quotedText(row.label)}\n\n${plainText(preview)}`} />}
+        actions={draftActions(row.draft, row.screenshotOffset)}
       />,
     );
   }
@@ -512,7 +591,7 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
       onSearchTextChange={setQuery}
       selectedItemId={selectedID}
       onSelectionChange={(id) => setSelectedID(id ?? undefined)}
-      navigationTitle={`Composer · ${audienceTitle[audience]}`}
+      navigationTitle={`Composer · ${audienceTitle[audience]}${session?.screenshot ? " · Screenshot attached" : ""}`}
       actions={<ActionPanel>{sendAction}{sharedActions}</ActionPanel>}
     >
       {items.length > 0 ? (

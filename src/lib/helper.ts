@@ -31,6 +31,7 @@ export function runHelper(assetsPath: string, args: string[], input?: string, ti
       if (code === 0) resolve(stdout);
       else reject(new HelperError(stderr.trim() || `helper exited with status ${code}`, code));
     });
+    child.stdin?.on("error", (error: Error) => reject(new HelperError(error.message, null)));
     if (input !== undefined) child.stdin?.write(input);
     child.stdin?.end();
   });

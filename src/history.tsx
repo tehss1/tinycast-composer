@@ -7,6 +7,7 @@ import { plainText, quotedText } from "./lib/markdown";
 
 function transcript(conversation: Conversation): string {
   const lines: string[] = [];
+  if (conversation.screenshotAttached) lines.push("**Screenshot attached** (image not saved)", "");
   if (conversation.recipient) lines.push(`**To:** ${plainText(conversation.recipient)}`, "");
   lines.push(`**Audience:** ${audienceTitle[conversation.audience]}`, "");
   let draft = 0;

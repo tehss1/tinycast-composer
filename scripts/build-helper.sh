@@ -2,7 +2,9 @@
 # Rebuilds assets/composer-helper as a universal, ad-hoc signed binary. Needs a Mac with Swift 6.
 set -eu
 cd "$(dirname "$0")/.."
-work=$(mktemp -d)
+scratch_parent=${TMPDIR:-$HOME/agent-tmp}
+mkdir -p "$scratch_parent"
+work=$(mktemp -d "$scratch_parent/composer-build.XXXXXXXX")
 trap 'rm -rf "$work"' EXIT
 for arch in arm64 x86_64; do
   swiftc -swift-version 6 -O -target "$arch-apple-macos26.0" helper/*.swift -o "$work/$arch"

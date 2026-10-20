@@ -126,6 +126,7 @@ export function compositionMessage(instruction: string, context: EmailContext | 
 export interface Turn {
   role: "user" | "assistant";
   text: string;
+  screenshotOffset?: number;
 }
 
 function turnMarkers(suffix: number) {
