@@ -119,7 +119,7 @@ Use a controlled test message only when sending is authorized. Choose PNG/TIFF o
 results; keep model-image encoding independent of the email-paste representation.
 
 
-## Implemented behavior and verification
+## Initial implementation and verification
 
 The implementation uses `-p --safe-mode --input-format stream-json --output-format stream-json
 --verbose`, preserving Composer's existing no-tools, no-session-persistence, MCP restrictions and
@@ -165,3 +165,71 @@ preview labels and delivery boundary whitespace.
 embedded image inline and its width after draft reopen, and consumes the rich pasteboard before the
 one-second restoration. In particular, Outlook's HTML data-URI handling and RTFD preference are not
 established by these native tests. No Tinycast changes were made.
+
+
+## File clipboard capture and thumbnail correction
+
+The first implementation only requested `public.png` / `public.tiff` from the clipboard and only
+captured at command startup. Its input handler was `setQuery`, so a file path pasted after startup
+was ordinary request text, and the preview only displayed a text label. An isolated Mac regression
+using `NSPasteboard.writeObjects([imageFile as NSURL])`, with no bitmap representation, failed on that
+implementation with `FAIL: file-only clipboard screenshot was not attached` and passes after this fix.
+
+**CleanShot evidence:** its [official changelog](https://cleanshot.com/changelog) documents configurable
+copy behavior (3.5.2). A [firsthand CleanShot report](https://discourse.joplinapp.org/t/solved-cannot-paste-images-screenshots-from-cleanshot-screetshot-grabbing-software/38633/6)
+describes both image bytes and a temporary image file on the clipboard, and switching to image data
+only. This does not establish the exact pasteboard UTIs in Graham's installed version/configuration.
+We did not inspect his clipboard or run CleanShot on the build Mac. A file-only copy, a mixed copy,
+and an image pasted after startup are all handled; none depends on a specific CleanShot setting.
+
+The native reader now accepts image file URLs, `NSFilenamesPboardType` path lists, raw PNG/TIFF,
+and clipboard path strings. Files are checked as regular, bounded local files and decoded with
+ImageIO; folders, non-images and remote URLs are rejected. A valid image file wins over bitmap data,
+because a Finder TIFF representation can be a file icon. When image metadata omits DPI, an `@2x`
+filename supplies the Retina fallback. The existing 640 CSS px fit and no-upscale policy remain.
+[Apple file pasteboard contracts](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/DragandDrop/Tasks/DraggingFiles.html).
+
+For file promises the helper uses `NSFilePromiseReceiver.receivePromisedFiles`, as declared by the
+installed macOS 26 CLT SDK, receiving into a unique mode-0700 directory under the Mac's temporary
+root. It waits up to two seconds and removes that directory on success, failure or timeout.
+Completion and cleanup are tested with a receiver fixture. A real application's promise delivery
+has not been validated; an unfulfilled promise can require copying again and retrying ⌘⇧V.
+[Apple NSFilePromiseReceiver](https://developer.apple.com/documentation/appkit/nsfilepromisereceiver).
+
+`onSearchTextChange` now recognizes an existing image path or `file://` URL at the end of the input,
+including spaces, quoted and shell-escaped paths. It removes that suffix before drafting and calls
+the helper's `image-file` operation with the path on stdin. The **Attach Clipboard Screenshot**
+action (⌘⇧V) handles image-only clipboard contents and replacements after startup. Generation and
+paste wait while attaching; later attachment/removal invalidates pending reads and stops a stale
+Claude run. Images and thumbnail bytes remain out of encrypted history.
+
+**Tinycast rendering checked at local commit `f6520408d6008e77c3373174f6b3b37578439409`:**
+`ExtensionDetailView.swift`'s `standaloneImageURL` accepts `http(s)` and `data` schemes, and rejects
+`file://` markdown images. `ExtensionMarkdownImage` passes inline data to
+`ExtensionIconCache.loadInlineAsync`, which base64-decodes it into `NSImage`. `ExtensionImage.swift`
+also accepts absolute image paths and data URIs for icons. The fix uses standalone markdown PNG
+data URIs in `List.Item.Detail`, the context Detail, and the draft's actual inline position, plus a
+PNG thumbnail icon on the attachment row. The helper generates at most 640×400 thumbnail pixels;
+`?raycast-width` / `?raycast-height` constrain display to 320×200. No preview files are written.
+
+Tinycast does not currently apply a controlled `List.searchText` prop; it exposes only
+`clearSearchBar`. Accordingly the path is cleared from its field, preceding request text is retained
+and displayed in the attachment detail, subsequent typing adds to that request, and **Clear Request**
+resets it. No Tinycast source changes are required.
+
+Verification: 33 Node tests cover path/URL detection, regular-file checks, quoting, spaces, rejecting
+remote/missing/non-image paths, inline thumbnail placement and escaping, plus the previous marker,
+Claude payload and encryption cases. Native tests use an isolated pasteboard to cover raw bitmap,
+file URL, Finder-style mixed file/icon data, legacy filename list and text-path reads; bounded
+thumbnail pixels; promise completion/timeout cleanup fixtures; and the earlier delivery/restore
+checks. The tests do not send paste keystrokes or activate applications.
+
+Remaining Mac check: reinstall `origin/screenshots`, paste a CleanShot capture into Composer both
+with and without preceding request text, verify the picture replaces the path, then verify an image
+copied after opening attaches with ⌘⇧V. Real CleanShot promise behavior and Outlook rich paste remain
+manual checks; exact clipboard types on Graham's Mac are still unobserved.
+
+The corrected helper was rebuilt as universal arm64/x86_64 on the approved Mac Mini using the repo
+script, passed `codesign --verify --strict`, and was copied back with matching SHA-256:
+`536571a9f4884048f47e52ca5e048257db68e72e61b478dca037719f79094169`.
+`npm run typecheck`, all 33 Node tests and the Raycast build passed for this correction.

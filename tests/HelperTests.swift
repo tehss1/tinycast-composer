@@ -4,6 +4,24 @@ import UniformTypeIdentifiers
 
 func emit(_ object: [String: Any]) -> Never { fatalError("Not used by tests") }
 
+final class PromiseFixture: NSFilePromiseReceiver {
+    let data: Data
+    let completes: Bool
+    init(data: Data, completes: Bool = true) { self.data = data; self.completes = completes; super.init() }
+    required init?(pasteboardPropertyList propertyList: Any, ofType type: NSPasteboard.PasteboardType) { nil }
+
+    override func receivePromisedFiles(atDestination destinationDir: URL, options: [AnyHashable: Any] = [:], operationQueue: OperationQueue, reader: @escaping (URL, (any Error)?) -> Void) {
+        guard completes else { return }
+        let permissions = try? FileManager.default.attributesOfItem(atPath: destinationDir.path)[.posixPermissions] as? NSNumber
+        precondition(permissions?.intValue == 0o700)
+        let url = destinationDir.appendingPathComponent("Promised Screenshot.png")
+        do {
+            try data.write(to: url)
+            reader(url, nil)
+        } catch { reader(url, error) }
+    }
+}
+
 @main
 struct HelperTests {
     @MainActor
@@ -61,10 +79,56 @@ struct HelperTests {
         pasteboard.setString("New user copy", forType: .string)
         snapshot.restore(to: pasteboard, ifUnchanged: oldCount)
         precondition(pasteboard.string(forType: .string) == "New user copy")
+        let fixtureDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: fixtureDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fixtureDirectory) }
+        let imageFile = fixtureDirectory.appendingPathComponent("CleanShot 2026-10-20 at 6.05.26 PM@2x.png")
+        try fixture(width: 600, height: 400, dpi: 144).write(to: imageFile)
+        pasteboard.clearContents()
+        pasteboard.writeObjects([imageFile as NSURL])
+        guard try Screenshot.read(from: pasteboard) != nil else {
+            FileHandle.standardError.write(Data("FAIL: file-only clipboard screenshot was not attached\n".utf8))
+            exit(1)
+        }
+        let finderItem = NSPasteboardItem()
+        finderItem.setString(imageFile.absoluteString, forType: .fileURL)
+        let icon = try Screenshot.fitted(fixture(width: 16, height: 16, dpi: 72)).representations()
+        finderItem.setData(icon.tiff, forType: .tiff)
+        pasteboard.clearContents()
+        pasteboard.writeObjects([finderItem])
+        precondition((try? Screenshot.read(from: pasteboard))?.pixelWidth == 600, "Read the screenshot, not Finder's icon")
+        for value in [imageFile.path, imageFile.absoluteString, "\"" + imageFile.path + "\""] {
+            pasteboard.clearContents()
+            pasteboard.setString(value, forType: .string)
+            precondition((try? Screenshot.read(from: pasteboard))?.pixelWidth == 600)
+        }
+        pasteboard.clearContents()
+        pasteboard.setPropertyList([imageFile.path], forType: NSPasteboard.PasteboardType("NSFilenamesPboardType"))
+        precondition((try? Screenshot.read(from: pasteboard))?.pixelWidth == 600)
+        pasteboard.clearContents()
+        pasteboard.setData(try Data(contentsOf: imageFile), forType: .png)
+        precondition((try? Screenshot.read(from: pasteboard))?.pixelWidth == 600)
+        pasteboard.clearContents()
+        pasteboard.setData(icon.tiff, forType: .tiff)
+        precondition((try? Screenshot.read(from: pasteboard)) != nil)
+        precondition((try? Screenshot.readFile(fixtureDirectory.path)) == nil)
+        let textFile = fixtureDirectory.appendingPathComponent("Not an image.png")
+        try Data("hello".utf8).write(to: textFile)
+        precondition((try? Screenshot.readFile(textFile.path)) == nil)
+        precondition((try? Screenshot.readFile("https://example.com/image.png")) == nil)
+        let preview = NSBitmapImageRep(data: Data(base64Encoded: image.previewPNG!)!)!
+        precondition(preview.pixelsWide <= 640 && preview.pixelsHigh <= 400)
+        let promisesBefore = try FileManager.default.contentsOfDirectory(atPath: FileManager.default.temporaryDirectory.path)
+        let promised = try Screenshot.receivePromises([PromiseFixture(data: Data(contentsOf: imageFile))])
+        precondition(promised?.pixelWidth == 600, "Promised screenshots must be materialized")
+        let unfinished = try Screenshot.receivePromises([PromiseFixture(data: Data(), completes: false)])
+        precondition(unfinished == nil)
+        let promisesAfter = try FileManager.default.contentsOfDirectory(atPath: FileManager.default.temporaryDirectory.path)
+        precondition(Set(promisesBefore) == Set(promisesAfter), "Promised files must be removed")
         do {
             _ = try Screenshot.fitted(Data("not an image".utf8))
             preconditionFailure("Invalid images must fail")
         } catch ScreenshotError.invalidImage {}
-        print("Helper tests passed: Retina sizing, no upscaling, HTML/RTFD inline order, clipboard restoration")
+        print("Helper tests passed: bitmap/file/path/promise capture, thumbnail sizing, inline delivery, clipboard restoration")
     }
 }

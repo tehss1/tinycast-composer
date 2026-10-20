@@ -28,12 +28,14 @@ import { plainText, quotedText } from "./lib/markdown";
 import { outlookBundleId, readOutlook } from "./lib/outlook";
 import {
   markedScreenshot,
+  pastedImageChange,
   pasteScreenshot,
   readScreenshot,
   Screenshot,
   screenshotDraft,
+  screenshotDraftMarkdown,
+  screenshotImageMarkdown,
   screenshotInstructions,
-  screenshotPreview,
 } from "./lib/screenshot";
 import {
   cleanupSource,
@@ -138,7 +140,10 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
   const { push, pop } = useNavigation();
   const [session, setSession] = useState<Session | undefined>();
   const [turns, setTurns] = useState<Turn[]>(props.resume?.turns ?? []);
-  const [query, setQuery] = useState("");
+  const [searchText, setSearchText] = useState("");
+  const [requestPrefix, setRequestPrefix] = useState("");
+  const [attaching, setAttaching] = useState(false);
+  const query = [requestPrefix, searchText].filter(Boolean).join(" ");
   const [streaming, setStreaming] = useState<string | undefined>();
   const [failure, setFailure] = useState<Failure | undefined>();
   const [audienceChoice, setAudienceChoice] = useState<AudienceChoice>(props.resume?.audience ?? "automatic");
@@ -154,6 +159,9 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
   const conversationID = useRef(props.resume?.id ?? newID());
   const createdAt = useRef(props.resume?.createdAt ?? Date.now());
   const usedScreenshot = useRef(props.resume?.screenshotAttached ?? false);
+  const attachmentGeneration = useRef(0);
+  const attachedScreenshot = useRef<Screenshot | undefined>(undefined);
+  const attachmentTarget = useRef<{ bundleId?: string; name?: string } | undefined>(undefined);
 
   const detected: Audience = useMemo(
     () => detectedAudience(session?.context?.recipient, preferences.internalDomains ?? ""),
@@ -165,9 +173,13 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
 
   useEffect(() => {
     const keyReady = warmHistoryKey();
+    const attachmentToken = attachmentGeneration.current;
     let live = true;
     if (props.resume) {
-      keyReady.then(() => live && setSession(resumedSession(props.resume!)));
+      keyReady.then(() => live && setSession({
+        ...resumedSession(props.resume!), screenshot: attachedScreenshot.current,
+        bundleId: attachmentTarget.current?.bundleId, appName: attachmentTarget.current?.name,
+      }));
       return () => {
         live = false;
       };
@@ -176,13 +188,16 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
       (): Session => ({ mode: "compose", source: "", toOutlook: false, insertsAtCaret: true }),
     );
     const screenshot = readScreenshot(environment.assetsPath).catch(() => {
-      if (live) showToast({ style: Toast.Style.Failure, title: "Couldn't read the clipboard image; continuing with text only" });
+      if (live && attachmentGeneration.current === attachmentToken) {
+        showToast({ style: Toast.Style.Failure, title: "Couldn't read the clipboard image; continuing with text only" });
+      }
       return undefined;
     });
     Promise.all([captured, keyReady, screenshot])
       .then(([captured, , screenshot]) => {
         if (!live) return;
-        setSession({ ...captured, screenshot });
+        if (attachmentGeneration.current === attachmentToken) attachedScreenshot.current = screenshot;
+        setSession({ ...captured, screenshot: attachedScreenshot.current });
         if (captured.notice) showToast({ style: Toast.Style.Failure, title: captured.notice });
       });
     return () => {
@@ -193,6 +208,7 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
   useEffect(
     () => () => {
       mounted.current = false;
+      attachmentGeneration.current += 1;
       run.current?.cancel();
     },
     [],
@@ -298,8 +314,8 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
   );
 
   useEffect(() => {
-    if (session?.mode === "rewrite" && turns.length === 0 && !props.resume) generate(undefined);
-  }, [session]);
+    if (session?.mode === "rewrite" && turns.length === 0 && !props.resume && !attaching) generate(undefined);
+  }, [session, attaching]);
 
   useEffect(() => {
     const request = queuedRequest.current;
@@ -308,8 +324,18 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
     generate(request);
   }, [turns]);
 
+  const clearRequest = () => {
+    setRequestPrefix("");
+    setSearchText("");
+    clearSearchBar();
+  };
+
   const send = () => {
     const request = query.trim();
+    if (attaching) {
+      showToast({ title: "Still attaching the screenshot. Press Return again in a moment." });
+      return;
+    }
     if (!session) {
       showToast({ title: "Still reading the draft. Press Return again in a moment." });
       return;
@@ -317,8 +343,7 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
     if (session?.mode === "rewrite" && turns.length === 0) {
       if (request) {
         queuedRequest.current = request;
-        setQuery("");
-        clearSearchBar();
+        clearRequest();
       }
       if (!running) generate(undefined);
       else if (request) showToast({ title: "Your change follows once the rewrite finishes" });
@@ -329,8 +354,7 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
       showToast({ style: Toast.Style.Failure, title: turns.length === 0 ? "Type what to write first" : "Type a change first" });
       return;
     }
-    setQuery("");
-    clearSearchBar();
+    clearRequest();
     generate(request || undefined);
   };
 
@@ -352,6 +376,10 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
     setModel(models[(models.findIndex((option) => option.id === model) + 1) % models.length].id);
 
   const deliver = async (draft: string, screenshotOffset?: number) => {
+    if (attaching) {
+      showToast({ title: "Wait for the screenshot to finish attaching before pasting." });
+      return;
+    }
     const source = session?.screenshot ? markedScreenshot(draft, screenshotOffset) : draft;
     const formatted = preparedForDelivery(source, session?.toOutlook ?? false, session?.insertsAtCaret ?? false, session?.boundaries);
     const { text, screenshotOffset: offset } = screenshotDraft(formatted, false);
@@ -392,8 +420,50 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
   const typing = query.trim().length > 0;
 
   const dropScreenshot = () => {
+    attachmentGeneration.current += 1;
+    attachedScreenshot.current = undefined;
+    setAttaching(false);
     if (running) stop();
     setSession((current) => current ? { ...current, screenshot: undefined } : current);
+  };
+
+  const attachScreenshot = async (path?: string) => {
+    const token = ++attachmentGeneration.current;
+    setAttaching(true);
+    if (running) stop();
+    try {
+      const image = await readScreenshot(environment.assetsPath, path);
+      if (!mounted.current || attachmentGeneration.current !== token) return;
+      if (!image) throw new Error("Copy an image or an image file, then try again.");
+      const target = !session?.bundleId ? await getFrontmostApplication().catch(() => undefined) : undefined;
+      if (!mounted.current || attachmentGeneration.current !== token) return;
+      attachedScreenshot.current = image;
+      if (target) attachmentTarget.current = target;
+      setSession((current) => current ? {
+        ...current, screenshot: image, bundleId: current.bundleId ?? target?.bundleId,
+        appName: current.appName ?? target?.name,
+      } : current);
+      setSelectedID("attachment");
+    } catch (error) {
+      if (mounted.current && attachmentGeneration.current === token) {
+        showToast({ style: Toast.Style.Failure, title: "Couldn't attach the screenshot", message: String(error) });
+      }
+    } finally {
+      if (mounted.current && attachmentGeneration.current === token) setAttaching(false);
+    }
+  };
+
+  const changeSearchText = (value: string) => {
+    const candidate = pastedImageChange([requestPrefix, value].filter(Boolean).join(" "), query);
+    if (!candidate) {
+      setSearchText(value);
+      return;
+    }
+    // Tinycast can clear its native field, but cannot replace it with a controlled searchText.
+    setRequestPrefix(candidate.text);
+    setSearchText("");
+    clearSearchBar();
+    attachScreenshot(candidate.path);
   };
 
   const contextMarkdown = () => {
@@ -406,6 +476,7 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
         `fitted to ${Math.round(image.displayWidth)} CSS pixels wide. ` +
         "Claude chooses its inline position; ask to move it when refining.", "",
       );
+      lines.push(screenshotImageMarkdown(image), "");
     } else if (props.resume?.screenshotAttached) {
       lines.push("**Screenshot was attached.** Its image was not saved in History and is unavailable here.", "");
     }
@@ -419,7 +490,14 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
 
   const sharedActions = (
     <>
-      {session?.screenshot ? (
+      <Action
+        title="Attach Clipboard Screenshot"
+        icon={Icon.Clipboard}
+        shortcut={{ modifiers: ["cmd", "shift"], key: "v" }}
+        onAction={() => attachScreenshot()}
+      />
+      {requestPrefix ? <Action title="Clear Request" icon={Icon.XMarkCircle} onAction={clearRequest} /> : null}
+      {session?.screenshot || attaching ? (
         <Action
           title="Remove Screenshot"
           icon={Icon.Trash}
@@ -505,16 +583,31 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
       : "Ask for a change, then press Return…";
 
   const items: ReactElement[] = [];
+  if (session?.screenshot || requestPrefix) {
+    const image = session?.screenshot;
+    const request = query ? `**Your request**\n\n${plainText(query)}\n\n` : "";
+    items.push(
+      <List.Item
+        key="attachment"
+        id="attachment"
+        title={image ? "Screenshot attached" : "Your request"}
+        subtitle={requestPrefix || ""}
+        icon={image ? { source: `data:image/png;base64,${image.previewPNG ?? image.png}` } : Icon.Pencil}
+        detail={<List.Item.Detail markdown={request + (image ? screenshotImageMarkdown(image) : "")} />}
+        actions={<ActionPanel>{sendAction}{sharedActions}</ActionPanel>}
+      />,
+    );
+  }
   if (running) {
     const draft = screenshotDraft(streaming || "…");
-    const preview = session?.screenshot ? screenshotPreview(draft.text, draft.screenshotOffset) : draft.text;
+    const preview = screenshotDraftMarkdown(draft.text, draft.screenshotOffset, session?.screenshot);
     items.push(
       <List.Item
         key="streaming"
         id="streaming"
         title="Writing…"
         icon={{ source: Icon.Pencil, tintColor: Color.Blue }}
-        detail={<List.Item.Detail markdown={plainText(preview)} />}
+        detail={<List.Item.Detail markdown={preview} />}
         actions={
           <ActionPanel>
             {typing ? sendAction : null}
@@ -566,9 +659,7 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
     })
     .reverse();
   for (const row of rows) {
-    const preview = session?.screenshot
-      ? screenshotPreview(row.draft, row.screenshotOffset ?? row.draft.length)
-      : row.draft;
+    const preview = screenshotDraftMarkdown(row.draft, row.screenshotOffset ?? row.draft.length, session?.screenshot);
     items.push(
       <List.Item
         key={row.id}
@@ -576,7 +667,7 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
         title={`Draft ${row.number}`}
         subtitle={row.label}
         icon={row.number === drafts.length ? Icon.Document : Icon.Clock}
-        detail={<List.Item.Detail markdown={`${quotedText(row.label)}\n\n${plainText(preview)}`} />}
+        detail={<List.Item.Detail markdown={`${quotedText(row.label)}\n\n${preview}`} />}
         actions={draftActions(row.draft, row.screenshotOffset)}
       />,
     );
@@ -584,11 +675,12 @@ export function Composer(props: { resume?: Conversation; onSaved?: () => void })
 
   return (
     <List
-      isLoading={!session || running}
+      isLoading={!session || running || attaching}
       isShowingDetail={items.length > 0}
       filtering={false}
       searchBarPlaceholder={placeholder}
-      onSearchTextChange={setQuery}
+      searchText={searchText}
+      onSearchTextChange={changeSearchText}
       selectedItemId={selectedID}
       onSelectionChange={(id) => setSelectedID(id ?? undefined)}
       navigationTitle={`Composer · ${audienceTitle[audience]}${session?.screenshot ? " · Screenshot attached" : ""}`}

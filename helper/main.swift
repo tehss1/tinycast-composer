@@ -247,8 +247,9 @@ case "seal": sealHistory(opening: false)
 case "open": sealHistory(opening: true)
 case "probe": probeKey()
 case "clipboard-image": screenshotCommand(pasting: false)
+case "image-file": screenshotCommand(pasting: false, fromFile: true)
 case "paste-image": screenshotCommand(pasting: true)
 default:
-    FileHandle.standardError.write(Data("usage: composer-helper outlook-context | seal | open | probe | clipboard-image | paste-image\n".utf8))
+    FileHandle.standardError.write(Data("usage: composer-helper outlook-context | seal | open | probe | clipboard-image | image-file | paste-image\n".utf8))
     exit(2)
 }

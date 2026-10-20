@@ -43,10 +43,16 @@ Press the shortcut in Outlook (or any app):
 - **Text selected:** Composer rewrites it straight away.
 - **Caret only:** type what to write and press Return. With a quoted email below the caret, an
   empty Return drafts a reply from the thread alone.
-- **Screenshot on the clipboard:** Composer attaches it automatically. Claude can use its visible
-  content and chooses where it belongs inline. The draft preview shows `[Screenshot]` at that spot.
+- **Screenshot on the clipboard:** Composer attaches it automatically, including copied image files.
+  Claude can use its visible content and chooses where it belongs inline. The draft preview shows
+  the screenshot at that spot.
   Ask for a change such as “move the screenshot above the steps” to reposition it. **Remove Screenshot**
   (⌘⇧X, also available in ⌘I) drops it from further requests and delivery in this conversation.
+
+You can also copy a screenshot after Composer opens: paste its path or file URL into the search bar,
+or use **Attach Clipboard Screenshot** (⌘⇧V) for an image-only clipboard. Composer replaces the path
+with an attachment thumbnail. If a request came before the path, it stays visible in the attachment
+detail; type to add to it, press Return to send it, or choose **Clear Request** to start again.
 
 Type a change and press Return to refine; every draft stays in the list. A change typed while the
 first rewrite is still running is sent as soon as it finishes. With the search bar empty, Return
@@ -59,6 +65,7 @@ from **Composer History**.
 | ⌘⇧A | Switch audience: Automatic, Internal, External |
 | ⌘⇧M | Switch model for this conversation: Sonnet, Opus, Haiku |
 | ⌘I | Show the email context and screenshot attachment |
+| ⌘⇧V | Attach or replace the screenshot from the current clipboard |
 | ⌘⇧X | Remove the screenshot for this conversation |
 | ⌘⇧C | Copy the draft |
 | ⌃C | Stop |
@@ -100,8 +107,11 @@ when inserting at the end of a line.
 
 ## How screenshots work
 
-Composer reads PNG/TIFF clipboard data once when a new conversation opens, independently of the
-Outlook context preference. It does not attach images when reopening History. Claude receives a
+Composer reads the clipboard when a new conversation opens, independently of the Outlook context
+preference. It accepts PNG/TIFF data, file URLs, Finder filename lists, and local image paths. Valid
+image files take priority over bitmap representations so a Finder file icon is not attached instead.
+A pasted image path or ⌘⇧V attaches or replaces the image after opening. Reopening History does not
+automatically read a new image, but the attach action is available. Claude receives a
 base64 PNG image content block through `claude -p --input-format stream-json`; safe mode, disabled
 tools, stripped API-key environment variables and disabled session/prompt history remain in place.
 The screenshot is reference material, never instructions.
@@ -109,8 +119,8 @@ The screenshot is reference material, never instructions.
 Claude emits one `<<<COMPOSER_SCREENSHOT_7E12C8>>>` marker at the desired inline position. Composer
 removes it before storing or copying the draft and keeps its character position separately. Missing
 markers put the image at the end; duplicate markers use the first position and discard the rest.
-Earlier drafts reconstruct the position for Claude during refinements. The visible `[Screenshot]`
-preview label is never pasted or copied.
+Earlier drafts reconstruct the position for Claude during refinements. The thumbnail appears at
+the chosen position in the preview; copying a draft keeps only its text.
 
 The image fits a maximum **640 CSS pixel** width, near the middle of the usual 600–700px email body
 range. Aspect ratio is preserved, smaller images are never upscaled, and up to 1280 source pixels
@@ -120,9 +130,11 @@ images are also limited to a 4096-pixel longest edge and a 4.5 MB PNG for Claude
 The helper supplies HTML with a base64 `<img>` and explicit width/height, plus native RTFD with an
 embedded TIFF and matching logical size (640 CSS px = 480 typographic points). Both are representations
 of **one** pasteboard item, so the whole email fragment is pasted in one go at the chosen position.
-It offers plain text as a fallback. No temporary image files are written. The helper snapshots every
-readable clipboard representation just before delivery, waits one second after ⌘V, then restores it
-only if the clipboard has not changed; a new copy made meanwhile is preserved.
+It offers plain text as a fallback. Previews are bounded PNG thumbnails carried in memory as data
+URIs; no preview files are written. A file promise, when offered, is received into a private per-read
+temporary directory (mode 0700), with a two-second wait and cleanup after reading or timing out.
+The helper snapshots every readable clipboard representation just before delivery, waits one second
+after ⌘V, then restores it only if the clipboard has not changed; a new copy made meanwhile is preserved.
 
 Outlook must accept rich formatting for the image to survive; Keep Text Only drops images. HTML/RTFD
 encoding and native sizing are tested, but the target Outlook build's format choice, data-URI image

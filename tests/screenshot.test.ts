@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { claudeArguments, claudeInput } from "../src/lib/claude";
-import { markedScreenshot, screenshotDraft, screenshotMarker, screenshotPreview, Screenshot } from "../src/lib/screenshot";
+import { markedScreenshot, screenshotDraft, screenshotMarker, Screenshot } from "../src/lib/screenshot";
 import { claudePrompt } from "../src/lib/prompt";
 import { preparedForDelivery } from "../src/lib/output";
 
@@ -32,7 +32,6 @@ test("one marker becomes a position, with no marker in saved or copied text", ()
   assert.equal(draft.text, "See the error below.\n\n\n\nTry these steps.");
   assert.equal(draft.screenshotOffset, "See the error below.\n\n".length);
   assert.ok(!draft.text.includes(screenshotMarker));
-  assert.equal(screenshotPreview(draft.text, draft.screenshotOffset), "See the error below.\n\n[Screenshot]\n\nTry these steps.");
   assert.equal(markedScreenshot(draft.text, draft.screenshotOffset), raw);
 });
 
@@ -57,7 +56,7 @@ test("refinements reconstruct placement without putting a marker in history", ()
   assert.ok(prompt.prompt.includes(screenshotMarker));
   const moved = screenshotDraft(`${screenshotMarker}\n\nSteps.\n\nDone.`);
   assert.equal(moved.screenshotOffset, 0);
-  assert.equal(screenshotPreview(moved.text, moved.screenshotOffset).trimStart(), "[Screenshot]\n\nSteps.\n\nDone.");
+  assert.equal(moved.text, "Steps.\n\nDone.");
 });
 
 test("placement uses UTF-16 offsets and preserves delivery's boundary whitespace", () => {
